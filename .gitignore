@@ -1,0 +1,69 @@
+# === PYTHON ===
+__pycache__/
+*.py[cod]
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+venv/
+.env
+*.log
+
+.idea/
+
+# Ignore data and unnecessary backend folders
+backend/data/
+backend/unnecessary/
+
+# === NODE / REACT ===
+node_modules/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+frontend/node_modules/
+frontend/dist/
+frontend/build/
+frontend/.next/
+frontend/.nuxt/
+frontend/.cache/
+
+# === DOCKER ===
+*.pid
+*.seed
+*.pid.lock
+*.sock
+
+# === OS-SPECIFIC FILES ===
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# === VSCODE ===
+.vscode/
+.history/
+
+# === TEMP FILES ===
+*.swp
+*.swo
+*.tmp
+*.bak
+
+# === DLLs and binaries ===
+*.dll
+*.lib
+*.pyd
+*.exe
+*.o
+*.obj
+*.class
+~
+# === Git Files ===
+*.orig
+*.rej
+
+# === ENV Configs ===
+.env.*
+!.env.example

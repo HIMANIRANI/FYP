@@ -1,0 +1,1 @@
+Nepse Navigator is an AI chatbot built using LLM, RAG reranking, and a MongoDB vector database. It serves as an assistant for the Nepali stock market and financial sector. Users can access NEPSE stock data, rules and regulations of the stock market, information about the Nepali stock market, and its responsible regulatory bodies.

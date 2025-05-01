@@ -1,0 +1,7 @@
+-r requirements.txt
+
+# Override faiss-cpu with GPU version (works only on Linux / supported CUDA env)
+faiss-gpu==1.7.2
+
+# pip install -r requirements-gpu.txt
+# pip install -r requirements.txt
