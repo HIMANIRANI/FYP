@@ -18,7 +18,7 @@ const tickerAnimation = `
   }
 
   .animate-ticker {
-    animation: ticker 200s linear infinite;
+    animation: ticker 300s linear infinite;
     display: flex;
     width: fit-content;
   }
@@ -148,7 +148,7 @@ const LandingPage = () => {
   useEffect(() => {
     const fetchStockData = async () => {
       try {
-        const response = await axios.get("http://localhost:8000/data/initial/date/today.json");
+        const response = await axios.get("http://localhost:8000/api/stocks/today");
         if (response.data && response.data.data) {
           const formattedData = response.data.data.map(item => ({
             symbol: `${item.company.code}`,

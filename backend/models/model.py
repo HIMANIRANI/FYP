@@ -14,7 +14,6 @@ from threading import Thread
 from typing import Dict, List, Optional, Tuple
 
 import faiss
-import langdetect
 import numpy as np
 import pandas as pd
 import requests
@@ -22,6 +21,7 @@ import torch
 from FlagEmbedding import FlagModel
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
+from langdetect import detect
 from ta.momentum import RSIIndicator
 from ta.trend import MACD, EMAIndicator, SMAIndicator
 from ta.volatility import BollingerBands
@@ -469,6 +469,17 @@ class PredictionPipeline:
         return table, insights + labels + next_steps
 
     def format_fundamental_comparison(self, companies_data: List[Dict]) -> Tuple[str, str]:
+        symbols = params.get("symbols", [])
+        fundamentals = self.load_fundamental_data()
+        logger.info(f"Filtering Symbols: {symbols}")
+        filtered = []
+        for f in fundamentals:
+            symbol = f.get("Company Symbol")
+            if symbol in symbols:
+                filtered.append(f)
+            else:
+                logger.debug(f"Skipped symbol: {symbol} (not in {symbols})")
+
         """Compare fundamental metrics of companies and provide insights."""
         thresholds = {
             "EPS": 20,
@@ -483,7 +494,7 @@ class PredictionPipeline:
             "Market Capitalization": "Higher = Stability & investor confidence"
         }
 
-        company_names = [data.get("Company", f"Stock {i+1}") for i, data in enumerate(companies_data)]
+        company_names = [data.get("Company Name", f"Stock {i+1}") for i, data in enumerate(companies_data)]
         metrics = ["EPS", "P/E Ratio", "PBV", "Market Capitalization"]
         metric_values = {metric: [data.get(metric, "N/A") for data in companies_data] for metric in metrics}
 
@@ -1046,10 +1057,13 @@ class PredictionPipeline:
             base_path = Path(__file__).parent.parent
             csv_path = base_path / "data" / "initial data" / "fundamental_data.csv"
             df = pd.read_csv(csv_path)
+            df["Company Symbol"] = df["Company Symbol"].str.strip().str.upper()
+            logger.info(f"Loaded fundamental data symbols: {df['Company Symbol'].tolist()}")
             return df.to_dict(orient="records")
         except Exception as e:
             logger.error(f"Error loading fundamental data: {e}")
             return []
+        
         
     def load_stock_data(self, symbol: str) -> Dict:
         """Load stock price/indicator data from JSON files."""
