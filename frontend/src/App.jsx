@@ -13,6 +13,7 @@ import Premium from "./premium/premium";
 import Profile from "./profile/profile";
 import SignupPage from "./signupPage/signupPage";
 import TermsAndConditions from "./terms/terms";
+import Watchlist from "./watchlist/watchlist";
 
 function App() {
   return (
@@ -30,6 +31,7 @@ function App() {
         <Route path="/failure" element={<FailurePage />} />
         <Route path="/success" element={<SuccessPage />} />
         <Route path="/homepage" element={<HomePage />} />
+        <Route path="/watchlist" element={<Watchlist />} />
       </Routes>
     </GoogleOAuthProvider>
   );

@@ -18,7 +18,7 @@ const tickerAnimation = `
   }
 
   .animate-ticker {
-    animation: ticker 300s linear infinite;
+    animation: ticker 3  00s linear infinite;
     display: flex;
     width: fit-content;
   }
