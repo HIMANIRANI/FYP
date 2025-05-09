@@ -1,6 +1,8 @@
-from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
-from langchain.embeddings import HuggingFaceEmbeddings
-from langchain.vectorstores import FAISS
+from transformers import AutoTokenizer, TextIteratorStreamer
+from auto_gptq import AutoGPTQForCausalLM
+from langchain_huggingface import HuggingFaceEmbeddings
+
+from langchain_community.vectorstores import FAISS
 from FlagEmbedding import FlagModel
 import requests, re, urllib.parse, torch
 from threading import Thread
@@ -8,23 +10,34 @@ from threading import Thread
 
 class PredictionPipeline:
     def __init__(self):
-        self.model_id = "TheBloke/TinyLlama-1.1B-Chat-v1.0-GPTQ" #'TheBloke/Starling-LM-7B-alpha-GPTQ' 
+        self.model_id = "TheBloke/TinyLlama-1.1B-Chat-v1.0-GPTQ"  
         self.temperature = 0.3
         self.bit = ["gptq-4bit-32g-actorder_True", "gptq-8bit-128g-actorder_True"]
-        self.sentence_transformer_modelname = 'sentence-transformers/all-mpnet-base-v2' # 'sentence-transformers/all-MiniLM-L6-v2'
+        self.sentence_transformer_modelname = 'sentence-transformers/all-MiniLM-L6-v2' # 'sentence-transformers/all-MiniLM-L6-v2'
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         print(f"1. Device being utilized: {self.device} !!!")
 
 
     def load_model_and_tokenizers(self):
         '''
-        This method will initialize the tokenizer and our LLM model and the streamer class.
+        This method initializes the tokenizer and GPTQ model using AutoGPTQForCausalLM.
         '''
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_id, torch_dtype=torch.float16, device_map=self.device,  use_fast=True, model_max_length=4000)
-        self.model = AutoModelForCausalLM.from_pretrained(self.model_id,  device_map=self.device, trust_remote_code=False,
-                                                          revision=self.bit[1]) 
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            self.model_id,
+            use_fast=True,
+            model_max_length=2048        )
+
+        self.model = AutoGPTQForCausalLM.from_quantized(
+            self.model_id,
+            revision=self.bit[1],  
+            use_safetensors=True,
+            trust_remote_code=False,
+            device="cuda:0",         
+            inject_fused_attention=False
+        )
+
         self.streamer = TextIteratorStreamer(self.tokenizer, skip_prompt=True)
-        print(f'2. {self.model_id} has been successfully loaded !!!')
+        print(f'2. {self.model_id} has been successfully loaded on GPU!!!')
 
     def load_sentence_transformer(self):
         '''
@@ -32,7 +45,7 @@ class PredictionPipeline:
         '''
         self.sentence_transformer = HuggingFaceEmbeddings(
                                 model_name=self.sentence_transformer_modelname,
-                                model_kwargs={'device':self.device},
+                                model_kwargs={'device':'cpu'},
                             )
         print("3. Sentence Transformer Loaded !!!!!!")
 
@@ -47,11 +60,15 @@ class PredictionPipeline:
        
     def load_embeddings(self):
         '''
-        This method will load the FAISS vector database that was developed in the Data_prerpation_NEPSE. 
+        This method will load the FAISS vector database that was developed in the Data_prerpation_NEPSE.
         '''
-        self.vector_db = FAISS.load_local("vector_db_NEPSE_GPU", self.sentence_transformer)
+        self.vector_db = FAISS.load_local(
+            "../data/vector data/data_vector_db",
+            self.sentence_transformer,
+            allow_dangerous_deserialization=True  
+        )
         print(f"5. FAISS VECTOR STORE LOADED !!!")
-            
+
 
     def rerank_contexts(self, query, contexts, number_of_reranked_documents_to_select = 3):
         '''
@@ -161,7 +178,7 @@ class PredictionPipeline:
             return [f"An error occurred, [{e}], while working with Google Translation API"]
 
         
-    def make_predictions(self, question, top_n_values=10):
+    def make_predictions(self, question, top_n_values=5):
             '''
             This method will perform the prediction 
             Parameters:
@@ -170,21 +187,20 @@ class PredictionPipeline:
             '''
 
             # this method checks if the question asked by the user is nepali or not
-            is_original_language_nepali = self.is_text_nepali(question)
+            is_original_language_nepali = self.is_text_nepali(question)         
 
-            # if the text is nepali, translate it to english first to get relevant docs from vector store, else just extract relavant docs from vector store
-            if is_original_language_nepali:
-                question = self.perform_translation(question, 'ne', 'en')
-                print("Translated Question: ", question)
-                if  isinstance(question, list):
-                    yield "data: " + str(question[0])+"\n\n"
-                    yield "data: END\n\n"
+            # if the text is nepali, translate it to english first to get relevant docs from vector store, else just     
+            question = self.perform_translation(question, 'ne', 'en')   
+            print("Translated Question: ", question)
+            if  isinstance(question, list):
+                yield "data: " + str(question[0])+"\n\n"
+                yield "data: END\n\n"
                 
             # get relevant docs from vector store with similarity score (l2 distance /euclidean distance)
             similarity_search = self.vector_db.similarity_search_with_score(question, k=top_n_values)
             
             # only select the relevant docs with euclidean distance less than 1.5
-            context = [doc.page_content for doc, score in similarity_search if score < 1.5]
+            context = [doc.page_content for doc, score in similarity_search if score < 1.2]
             number_of_contexts = len(context)
 
             if number_of_contexts == 0:
@@ -199,27 +215,29 @@ class PredictionPipeline:
                 
 
                 # the prompt being used to be passed into the LLM
-                prompt = f'''
-                        Based solely on the information given in the context above, answer the following question. 
-                        Never answer a question in your own words outside of the context provided. 
-                        If the information isn’t available in the context to formulate an answer, politely say "Sorry, I don’t have knowledge about that topic."
-                        Please do not provide additional explanations or information by answering outside of the context. 
-                        Always answer in maximum five sentences and less than hundred words.
+                prompt = f"""
+                <|system|>
+                Answer based ONLY on this context (keep response under 3 sentences):
+                {context}
 
-                        \n\n
-                        Question: {question}\n\n
-                        Context: {context}\n\n
-                        Answer: 
-                '''
-
+                If the answer isn't in the context, say "I don't know."</s>
+                <|user|>
+                {question}</s>
+                <|assistant|>
+                """
                 # performing tokenization and passing input to GPU
                 inputs = self.tokenizer([prompt], return_tensors="pt").to("cuda")
-                generation_kwargs = dict(inputs, streamer=self.streamer, max_new_tokens=2000, do_sample=True,
-                                    temperature=0.3,
-                                    top_p=0.95,
-                                    top_k=40,
-                                    repetition_penalty=1.1, pad_token_id = 50256)
-                
+                generation_kwargs = dict(
+                    inputs,
+                    streamer=self.streamer,
+                    max_new_tokens=500,  
+                    do_sample=True,
+                    temperature=0.3,
+                    top_p=0.9,          
+                    top_k=40,
+                    repetition_penalty=1.2,  
+                    pad_token_id=self.tokenizer.eos_token_id  
+                )
                 
                 '''
                 Since LLMs are auto-regressive models, they are able to predict the next word in sequence. This means, as the model keeps on predicting the next word-
@@ -233,17 +251,38 @@ class PredictionPipeline:
 
                 thread.start()
                 if is_original_language_nepali:
-                    sentence = ""
+                    buffer = ""
                     for token in self.streamer:
                         if token != "</s>":
-                            sentence += token
-                            if "." in token:
-                                sentence = self.translate_using_google_api(sentence, "en", "ne")[0]
-                                sentence = re.sub(r'</?s>', '', sentence)  # This will remove both <s> and </s> if present
-                                yield f"data: {sentence}\n\n"  # Format for SSE
-                                sentence = ""
+                            buffer += token
+                            # Translate at every punctuation (not just ".")
+                            if any(punct in token for punct in [".", "?", "!", "।"]):
+                                translated = self.translate_using_google_api(buffer, "en", "ne")[0]
+                                yield f"data: {translated}\n\n"
+                                buffer = ""
                 else:
                     for token in self.streamer:
                         yield f"data: {token}\n\n"  # Format for SSE
                 thread.join()
             yield "data: END\n\n"
+            
+# Initialize a PredictionPipeline object
+pipeline = PredictionPipeline()
+pipeline.load_model_and_tokenizers()
+pipeline.load_sentence_transformer()
+pipeline.load_reranking_model()
+pipeline.load_embeddings()
+
+
+# Example test queries (feel free to change or add more)
+test_queries = [
+    "What is the minimum capital requirement for opening a broker company in Nepal?",
+    "IPO को बारेमा जानकारी दिनुहोस्।",  # Nepali query
+    "Which stock had the highest trading volume last week?",
+]
+
+# Run predictions for each query and print the streamed result
+for query in test_queries:
+    print(f"\n=== QUERY: {query} ===")
+    for response in pipeline.make_predictions(query):
+        print(response.replace("data: ", "").strip())

@@ -14,7 +14,7 @@ from fastapi.responses import RedirectResponse
 
 # Adjust path to import PredictionPipeline
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from backend.models.model import PredictionPipeline
+# from backend.models.model import PredictionPipeline
 from backend.routes.auth_routes import router as auth_router
 from backend.routes.payments import PaymentRequest, initiate_payment
 
@@ -41,18 +41,18 @@ app.add_middleware(
 # Register auth routes
 app.include_router(auth_router)
 
-# Model initialization
-pipeline = PredictionPipeline()
-try:
-    logger.info("Loading PredictionPipeline components...")
-    pipeline.load_model_and_tokenizers()
-    pipeline.load_sentence_transformer()
-    pipeline.load_reranking_model()
-    pipeline.load_embeddings()
-    logger.info("PredictionPipeline loaded successfully.")
-except Exception as e:
-    logger.error(f"Failed to load PredictionPipeline: {str(e)}", exc_info=True)
-    raise
+# # Model initialization
+# pipeline = PredictionPipeline()
+# try:
+#     logger.info("Loading PredictionPipeline components...")
+#     pipeline.load_model_and_tokenizers()
+#     pipeline.load_sentence_transformer()
+#     pipeline.load_reranking_model()
+#     pipeline.load_embeddings()
+#     logger.info("PredictionPipeline loaded successfully.")
+# except Exception as e:
+#     logger.error(f"Failed to load PredictionPipeline: {str(e)}", exc_info=True)
+#     raise
 
 @app.get("/", tags=["Root"])
 async def root():
