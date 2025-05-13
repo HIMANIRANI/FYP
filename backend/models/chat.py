@@ -1,288 +1,636 @@
-from transformers import AutoTokenizer, TextIteratorStreamer
-from auto_gptq import AutoGPTQForCausalLM
+from transformers import (
+    AutoTokenizer,
+    AutoModelForCausalLM,
+    TextIteratorStreamer,
+    BitsAndBytesConfig
+)
+from transformers import pipeline as hf_pipeline
 from langchain_huggingface import HuggingFaceEmbeddings
-
 from langchain_community.vectorstores import FAISS
-from FlagEmbedding import FlagModel
-import requests, re, urllib.parse, torch
+from sentence_transformers import CrossEncoder
+from huggingface_hub import login
+import torch
+import os
+import re
+import logging
+import time
+import psutil
+import requests
+import json
+import random
 from threading import Thread
+from typing import List, Dict
+from urllib.parse import quote
+from dotenv import load_dotenv
 
+load_dotenv()
+
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# Authenticate with Hugging Face
+if os.getenv("HF_TOKEN"):
+    logger.info("Authenticating with Hugging Face")
+    login(token=os.getenv("HF_TOKEN"))
+    print(f"Token loaded: {os.getenv('HF_TOKEN') is not None}")
+else:
+    logger.warning("HF_TOKEN not found in environment variables")
+
+# Translation is now available with the free implementation
+print("✅ Translation features are enabled using free Google Translate")
+
+def get_system_memory_info():
+    """Get system memory information"""
+    memory = psutil.virtual_memory()
+    total_gb = memory.total / (1024 ** 3)
+    available_gb = memory.available / (1024 ** 3)
+    used_gb = memory.used / (1024 ** 3)
+    
+    print(f"System Memory: Total={total_gb:.2f}GB, Used={used_gb:.2f}GB, Available={available_gb:.2f}GB")
+    return memory.total, memory.available
+
+class TranslationService:
+    """Free Google Translate service using web scraping"""
+    def __init__(self):
+        self.base_url = "https://translate.google.com/m"
+        self.available = True
+        self.user_agents = [
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.107 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Safari/605.1.15",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:90.0) Gecko/20100101 Firefox/90.0"
+        ]
+        
+    def translate(self, text: str, source_lang: str = "ne", target_lang: str = "en") -> str:
+        """Translate text using free Google Translate web interface"""
+        if not text.strip():
+            return text
+            
+        try:
+            # Add a small delay to avoid rate limiting
+            time.sleep(random.uniform(0.1, 0.5))
+            
+            # Encode text for URL
+            encoded_text = quote(text)
+            
+            # Construct URL
+            url = f"{self.base_url}?sl={source_lang}&tl={target_lang}&q={encoded_text}"
+            
+            # Random user agent to avoid blocking
+            headers = {
+                'User-Agent': random.choice(self.user_agents),
+                'Accept': 'text/html,application/xhtml+xml,application/xml',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Referer': 'https://translate.google.com/',
+                'DNT': '1',
+            }
+            
+            # Make request
+            response = requests.get(url, headers=headers, timeout=5)
+            
+            if response.status_code == 200:
+                # Extract translation using regex
+                # Pattern looks for content within the translation result div
+                result = re.search(r'class="result-container">(.*?)</div>', response.text)
+                
+                if result:
+                    translated_text = result.group(1)
+                    # Clean up HTML entities
+                    translated_text = translated_text.replace("&amp;", "&")
+                    translated_text = translated_text.replace("&lt;", "<")
+                    translated_text = translated_text.replace("&gt;", ">")
+                    translated_text = translated_text.replace("&quot;", "\"")
+                    translated_text = translated_text.replace("&#39;", "'")
+                    return translated_text
+                else:
+                    logger.warning("Translation pattern not found in response")
+                    return text
+            else:
+                logger.error(f"Translation request failed: {response.status_code}")
+                return text
+                
+        except Exception as e:
+            logger.error(f"Translation error: {str(e)}")
+            return text
+            
+    def detect_language(self, text: str) -> str:
+        """Basic language detection - just checks for Devanagari script for Nepali"""
+        nepali_range = re.compile(r'[\u0900-\u097F]')
+        return "ne" if bool(nepali_range.search(text)) else "en"
 
 class PredictionPipeline:
-    def __init__(self):
-        self.model_id = "TheBloke/TinyLlama-1.1B-Chat-v1.0-GPTQ"  
-        self.temperature = 0.3
-        self.bit = ["gptq-4bit-32g-actorder_True", "gptq-8bit-128g-actorder_True"]
-        self.sentence_transformer_modelname = 'sentence-transformers/all-MiniLM-L6-v2' # 'sentence-transformers/all-MiniLM-L6-v2'
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        print(f"1. Device being utilized: {self.device} !!!")
-
-
-    def load_model_and_tokenizers(self):
-        '''
-        This method initializes the tokenizer and GPTQ model using AutoGPTQForCausalLM.
-        '''
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            self.model_id,
-            use_fast=True,
-            model_max_length=2048        )
-
-        self.model = AutoGPTQForCausalLM.from_quantized(
-            self.model_id,
-            revision=self.bit[1],  
-            use_safetensors=True,
-            trust_remote_code=False,
-            device="cuda:0",         
-            inject_fused_attention=False
-        )
-
-        self.streamer = TextIteratorStreamer(self.tokenizer, skip_prompt=True)
-        print(f'2. {self.model_id} has been successfully loaded on GPU!!!')
-
-    def load_sentence_transformer(self):
-        '''
-        This method will initialize our sentence transformer model to generate embeddings for a given query.
-        '''
-        self.sentence_transformer = HuggingFaceEmbeddings(
-                                model_name=self.sentence_transformer_modelname,
-                                model_kwargs={'device':'cpu'},
-                            )
-        print("3. Sentence Transformer Loaded !!!!!!")
-
-
-    def load_reranking_model(self):
-        '''
-        An opensoure reranking model called bge-reranker from huggingface is utilized to perform reranking on the retrived relevant documents from vector store.
-        This method will initialize the reranking model.        
-        '''
-        self.reranker = FlagModel('BAAI/bge-reranker-large', use_fp16=True)  # 'BAAI/bge-reranker-large'->2GB BAAI/bge-reranker-base-> 1GB
-        print("4. Re-Ranking Algorithm Loaded !!!")
-       
-    def load_embeddings(self):
-        '''
-        This method will load the FAISS vector database that was developed in the Data_prerpation_NEPSE.
-        '''
-        self.vector_db = FAISS.load_local(
-            "../data/vector data/data_vector_db",
-            self.sentence_transformer,
-            allow_dangerous_deserialization=True  
-        )
-        print(f"5. FAISS VECTOR STORE LOADED !!!")
-
-
-    def rerank_contexts(self, query, contexts, number_of_reranked_documents_to_select = 3):
-        '''
-        Perform reranking on the retrieved documents.
-
-        Parameters:
-        query -> the question aksed by the user
-        contexts -> the relevant documents retrived from the vector store
-        number_of_reranked_documents_to_select -> Top k documents to choose from after reranking them.
-
-        return:
-        top k contexts after reranking. [List]
-        '''
+    def __init__(self, use_cpu=False, use_8bit=False, use_4bit=False, offload_folder="./offload"):
+        # Device and memory configuration
+        self.use_cpu = use_cpu
+        self.use_8bit = use_8bit
+        self.use_4bit = use_4bit
+        self.offload_folder = offload_folder
+        os.makedirs(offload_folder, exist_ok=True)
         
-        # Encode the query and contexts using the reranker's embedding model
-        embeddings_1 = self.reranker.encode(query)
-        embeddings_2 = self.reranker.encode(contexts)
+        # Translation service
+        self.translator = TranslationService()
         
-        # Calculate the similarity between the query and each context
-        similarity = embeddings_1 @ embeddings_2.T
-
-        # Ensure the number of reranked documents to select is not greater than the total number of contexts.
-        # If the number of documents to rerank is more than the number of retrieved documents, return all documents
-        number_of_contexts = len(contexts)
-        if number_of_reranked_documents_to_select > number_of_contexts:
-            print(f"WARNING !!! Length of contexts({number_of_contexts}) is less than number_of_reranked_documents_to_select ({number_of_reranked_documents_to_select})")
-            number_of_reranked_documents_to_select = number_of_contexts
-
-        # Select the indices of the highest-ranked contexts based on similarity
-        highest_ranked_indices = sorted(range(len(similarity)), key=lambda i: similarity[i], reverse=True)[:number_of_reranked_documents_to_select]
-
-        # Return the reranked contexts based on the selected indices
-        return [contexts[index] for index in highest_ranked_indices]
-    
-
-    def is_text_nepali(self, text):
-        '''
-        This method checks if a question asked by the user contains any nepali word. If so, the response from the LLM is also returned in Nepali -
-        - using google translate API
-
-        parameters:
-        text -> the question asked by the user
-
-        returns: bool
-        True if the text contains any nepali word else false
-        '''
-        nepali_regex = re.compile(r'[\u0900-\u097F]+')
-        if nepali_regex.search(text):
-            return True
-        return False
-    
-
-    def translate_using_google_api(self, text, source_language = "auto", target_language = "ne", timeout=5):
-        '''
-        This function has been copied from here:
-        # https://github.com/ahmeterenodaci/easygoogletranslate/blob/main/easygoogletranslate.py
-
-        This free API is used to perform translation between English to Nepali and vice versa.
-
-        parameters: 
-        source_language -> the language code for the source language
-        target_language -> the new language to which the text is to be translate 
-
-        returns
-        '''
-        pattern = r'(?s)class="(?:t0|result-container)">(.*?)<'
-        escaped_text = urllib.parse.quote(text.encode('utf8'))
-        url = 'https://translate.google.com/m?tl=%s&sl=%s&q=%s'%(target_language, source_language, escaped_text)
-        response = requests.get(url, timeout=timeout)
-        result = response.text.encode('utf8').decode('utf8')
-        result = re.findall(pattern, result)  
-        return result
-    
-    def split_and_translate_text(self, text, source_language = "auto", target_language = "ne", max_length=5000):
-        """
-        Split the input text into sections with a maximum length.
+        # Model configurations - Using smaller models
+        self.llm_model_id = "google/gemma-2b-it"  # Consider "pfnet/plamo-1.1b" for even smaller model
+        self.classifier_model_id = "distilbert-base-uncased"  
+        self.sentence_transformer_modelname = 'sentence-transformers/all-MiniLM-L6-v2'
+        self.reranker_model_id = "cross-encoder/ms-marco-TinyBERT-L-2"
         
-        Parameters:
-        - text: The input text to be split.
-        - max_length: The maximum length for each section (default is 5000 characters).
-
-        Returns:c
-        A list of strings, each representing a section of the input text.
-        """
-
-        if source_language == "en":
-            splitted_text = text.split(".")
-        elif source_language == "ne":
-            splitted_text = text.split("।")
+        # Model placement strategy
+        self.model_placement = {
+            'llm': 'gpu',  # Always try to put LLM on GPU
+            'classifier': 'cpu',
+            'reranker': 'cpu',
+            'embedder': 'cpu'
+        }
+        
+        # Setup device
+        if torch.cuda.is_available() and not use_cpu:
+            self.device = torch.device('cuda')
+            gpu_mem = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+            logger.info(f"Using GPU: {torch.cuda.get_device_name(0)} with {gpu_mem:.2f}GB memory")
+            
+            # If GPU memory is very limited, adjust placement
+            if gpu_mem < 6:  # Less than 6GB
+                self.model_placement['llm'] = 'gpu'  # Still try for LLM
         else:
-            splitted_text = [text[i:i+max_length] for i in range(0, len(text), max_length)]
-
-        # perform translation (the free google api can only perform translation for 5000 characters max. So, splitting the text is necessary )
-        translate_and_join_splitted_text = " ".join([self.translate_using_google_api(i, source_language, target_language)[0] for i in splitted_text])
-        return translate_and_join_splitted_text
-    
-    def perform_translation(self, question, source_language, target_language):
-        try:
-            # Check if the length of the question is greater than 5000 characters
-            if len(question) > 5000:
-                # If so, split and translate the text using a custom method
-                return self.split_and_translate_text(question, source_language, target_language)
-            else:
-                # If not, use the Google Translation API to translate the entire text
-                return self.translate_using_google_api(question, source_language, target_language)[0]
-        except Exception as e:
-            return [f"An error occurred, [{e}], while working with Google Translation API"]
-
+            self.device = torch.device('cpu')
+            # Force all models to CPU if no GPU or use_cpu=True
+            self.model_placement = {k: 'cpu' for k in self.model_placement.keys()}
+            logger.info("Using CPU for computation")
         
-    def make_predictions(self, question, top_n_values=5):
-            '''
-            This method will perform the prediction 
-            Parameters:
-            question -> The question asked by the user
-            top_n_values -> The top n values to select from the relavant retrived documents from vector store.
-            '''
+        # Vector store paths
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.vector_db_paths = {
+            'broker': os.path.join(base_dir, "data/vector data/broker_vector_db"),
+            'fundamental': os.path.join(base_dir, "data/vector data/fundamental_vector_db"),
+            'company': os.path.join(base_dir, "data/vector data/company_vector_db"),
+            'pdf': os.path.join(base_dir, "data/vector data/pdf_vector_db")
+        }
+        
+        # Initialize model containers
+        self.llm_model = None
+        self.llm_tokenizer = None
+        self.classifier = None
+        self.reranker = None
+        self.embedder = None
+        self.vector_dbs = {}
+        
+        # Simplified prompt templates
+        self.prompt_templates = {
+            "broker_contact": """
+            <|system|>
+            You are a broker information assistant. Provide details from context only.</s>
+            <|user|>
+            Context: {context}
+            Question: {question}</s>
+            <|assistant|>
+            """,
+            "stock_info": """
+            <|system|>
+            You are a stock analyst. Provide precise data.</s>
+            <|user|>
+            Context: {context}
+            Question: {question}</s>
+            <|assistant|>
+            """,
+            "regulations": """
+            <|system|>
+            You are a regulatory expert. explain them in layman terms</s>
+            <|user|>
+            Context: {context}
+            Question: {question}</s>
+            <|assistant|>
+            """,
+            "fundamental": """
+            <|system|>
+            Explain financial concepts simply.</s>
+            <|user|>
+            Context: {context}
+            Question: {question}</s>
+            <|assistant|>
+            """
+        }
 
-            # this method checks if the question asked by the user is nepali or not
-            is_original_language_nepali = self.is_text_nepali(question)         
+    def _get_quantization_config(self):
+        """Get appropriate quantization configuration based on settings"""
+        if self.use_cpu:
+            return None
+        elif self.use_8bit:
+            return BitsAndBytesConfig(
+                load_in_8bit=True,
+                llm_int8_enable_fp32_cpu_offload=True
+            )
+        elif self.use_4bit:
+            return BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.float16,
+                bnb_4bit_use_double_quant=True
+            )
+        return None
 
-            # if the text is nepali, translate it to english first to get relevant docs from vector store, else just     
-            question = self.perform_translation(question, 'ne', 'en')   
-            print("Translated Question: ", question)
-            if  isinstance(question, list):
-                yield "data: " + str(question[0])+"\n\n"
-                yield "data: END\n\n"
-                
-            # get relevant docs from vector store with similarity score (l2 distance /euclidean distance)
-            similarity_search = self.vector_db.similarity_search_with_score(question, k=top_n_values)
+    def load_tokenizers(self):
+        """Load tokenizers separately to reduce memory pressure"""
+        try:
+            logger.info("Loading tokenizers...")
             
-            # only select the relevant docs with euclidean distance less than 1.5
-            context = [doc.page_content for doc, score in similarity_search if score < 1.2]
-            number_of_contexts = len(context)
+            # LLM tokenizer
+            self.llm_tokenizer = AutoTokenizer.from_pretrained(self.llm_model_id)
+            
+            logger.info("Tokenizers loaded successfully")
+            return True
+        except Exception as e:
+            logger.error(f"Error loading tokenizers: {str(e)}")
+            return False
 
-            if number_of_contexts == 0:
-                yield "data: Please know that the question asked and domain knowledge provided are irrelavant. Therefore, unable to provide answer to this question. Thank you.\n\n"
+    def load_small_models(self):
+        """Load smaller models all on CPU"""
+        try:
+            # Load embedder (always CPU)
+            logger.info("Loading sentence transformer...")
+            self.embedder = HuggingFaceEmbeddings(
+                model_name=self.sentence_transformer_modelname,
+                model_kwargs={'device': 'cpu'}
+            )
+            
+            # Load classifier (always CPU)
+            logger.info("Loading DistilBERT classifier...")
+            self.classifier = hf_pipeline(
+                "text-classification",
+                model=self.classifier_model_id,
+                device=-1  # Force CPU
+            )
+            
+            # Load reranker (always CPU)
+            logger.info("Loading TinyBERT reranker...")
+            self.reranker = CrossEncoder(
+                self.reranker_model_id, 
+                device='cpu'
+            )
+            
+            logger.info("All small models loaded on CPU")
+            return True
+        except Exception as e:
+            logger.error(f"Error loading small models: {str(e)}")
+            return False
 
-            else:
-                if number_of_contexts > 1:
-                    # perform reranking
-                    context = self.rerank_contexts(question, context)
-
-                context = ". ".join(context)
+    def load_llm(self):
+        """Load LLM model with priority on GPU"""
+        try:
+            logger.info("Loading LLM model...")
+            
+            # Determine device placement
+            llm_device = 'cuda' if self.model_placement['llm'] == 'gpu' and torch.cuda.is_available() else 'cpu'
+            
+            quantization_config = self._get_quantization_config() if llm_device == 'cuda' else None
+            
+            self.llm_model = AutoModelForCausalLM.from_pretrained(
+                self.llm_model_id,
+                device_map=llm_device if llm_device == 'cuda' else None,
+                torch_dtype=torch.float16 if llm_device == 'cuda' else torch.float32,
+                quantization_config=quantization_config,
+                low_cpu_mem_usage=True
+            )
+            
+            # Explicitly move to device if not using device_map
+            if llm_device != 'cuda':
+                self.llm_model = self.llm_model.to(llm_device)
                 
+            logger.info(f"LLM loaded successfully on {llm_device.upper()}")
+            return True
+        except Exception as e:
+            logger.error(f"Error loading LLM: {str(e)}")
+            # Fallback to CPU if GPU fails
+            if llm_device == 'cuda':
+                logger.warning("Attempting fallback to CPU for LLM")
+                self.model_placement['llm'] = 'cpu'
+                return self.load_llm()
+            return False
 
-                # the prompt being used to be passed into the LLM
-                prompt = f"""
-                <|system|>
-                Answer based ONLY on this context (keep response under 3 sentences):
-                {context}
+    def load_models(self):
+        """Load all models with memory optimization"""
+        # Clear cache before loading
+        torch.cuda.empty_cache() if torch.cuda.is_available() else None
+        
+        success = True
+        
+        # Stage 1: Load tokenizers
+        if not self.load_tokenizers():
+            logger.error("Failed to load tokenizers")
+            success = False
+        
+        # Stage 2: Load small CPU models first
+        if success and not self.load_small_models():
+            logger.error("Failed to load small models")
+            success = False
+            
+        # Stage 3: Try loading LLM on GPU (with fallback to CPU)
+        if success and not self.load_llm():
+            logger.error("Failed to load LLM")
+            success = False
+            
+        return success
 
-                If the answer isn't in the context, say "I don't know."</s>
-                <|user|>
-                {question}</s>
-                <|assistant|>
-                """
-                # performing tokenization and passing input to GPU
-                inputs = self.tokenizer([prompt], return_tensors="pt").to("cuda")
-                generation_kwargs = dict(
-                    inputs,
-                    streamer=self.streamer,
-                    max_new_tokens=500,  
-                    do_sample=True,
-                    temperature=0.3,
-                    top_p=0.9,          
-                    top_k=40,
-                    repetition_penalty=1.2,  
-                    pad_token_id=self.tokenizer.eos_token_id  
-                )
-                
-                '''
-                Since LLMs are auto-regressive models, they are able to predict the next word in sequence. This means, as the model keeps on predicting the next word-
-                - we can access the word and pass to the front-end. This efficitively improves user experience as the user won't have to wait until an entire response has
-                been generated. This is also called text/response streaming.
-                
-                Here, I use threading to get the tokens being generated in real-time and utilize SSE (Server side events) to stream the responses to frontend in real time.
-
-                '''
-                thread = Thread(target=self.model.generate, kwargs=generation_kwargs)
-
-                thread.start()
-                if is_original_language_nepali:
-                    buffer = ""
-                    for token in self.streamer:
-                        if token != "</s>":
-                            buffer += token
-                            # Translate at every punctuation (not just ".")
-                            if any(punct in token for punct in [".", "?", "!", "।"]):
-                                translated = self.translate_using_google_api(buffer, "en", "ne")[0]
-                                yield f"data: {translated}\n\n"
-                                buffer = ""
+    def load_vector_dbs(self):
+        """Load all FAISS vector stores with error handling"""
+        self.vector_dbs = {}
+        for name, path in self.vector_db_paths.items():
+            try:
+                if os.path.exists(path):
+                    self.vector_dbs[name] = FAISS.load_local(
+                        path,
+                        self.embedder,
+                        allow_dangerous_deserialization=True
+                    )
+                    logger.info(f"Loaded {name} DB with {len(self.vector_dbs[name].index_to_docstore_id)} docs")
                 else:
-                    for token in self.streamer:
-                        yield f"data: {token}\n\n"  # Format for SSE
-                thread.join()
-            yield "data: END\n\n"
+                    logger.warning(f"Vector DB not found at {path}")
+            except Exception as e:
+                logger.error(f"Failed loading {name} DB: {e}")
+
+    def translate_text(self, text: str, source_lang: str = "ne", target_lang: str = "en") -> str:
+        """Translate text using Google Translate"""
+        return self.translator.translate(text, source_lang, target_lang)
+
+    def classify_query(self, query: str) -> str:
+        """Classify queries into appropriate categories based on content.
+        
+        Categories and their corresponding databases:
+        - broker_contact: Broker contact details only
+        - stock_info: Stock prices and technical indicators (company DB)
+        - fundamental: Fundamental analysis data (fundamental DB)
+        - regulations: NEPSE, CDSC rules and regulations (pdf DB)
+        """
+        try:
+            # If classifier not loaded, default to fundamental
+            if not self.classifier:
+                return "fundamental"
+                
+            # First check for specific patterns that should override classifier
+            query_lower = query.lower()
             
-# Initialize a PredictionPipeline object
-pipeline = PredictionPipeline()
-pipeline.load_model_and_tokenizers()
-pipeline.load_sentence_transformer()
-pipeline.load_reranking_model()
-pipeline.load_embeddings()
+            # Check for broker contact queries
+            broker_contact_keywords = [
+                "contact", "phone", "email", "address", "broker details",
+                "how to reach", "where is", "location of","broker"
+            ]
+            if any(keyword in query_lower for keyword in broker_contact_keywords):
+                return "broker_contact"
+                
+            # Check for NEPSE/CDSC regulations
+            regulation_keywords = [
+                "nepse", "cdsc", "regulation", "rule", "policy", 
+                "procedure", "guideline", "requirement", "compliance",
+                "what is nepse", "explain nepse", "nepse definition"
+            ]
+            if any(keyword in query_lower for keyword in regulation_keywords):
+                return "regulations"
+                
+            # Check for fundamental analysis queries
+            fundamental_keywords = [
+                "fundamental", "pe ratio", "eps", "dividend", "book value",
+                "financial", "balance sheet", "income statement", "annual report"
+            ]
+            if any(keyword in query_lower for keyword in fundamental_keywords):
+                return "fundamental"
+                
+            # Default to using the classifier for remaining cases
+            categories = {
+                "LABEL_0": "broker_contact",
+                "LABEL_1": "stock_info",
+                "LABEL_2": "regulations",
+                "LABEL_3": "fundamental"
+            }
+            result = self.classifier(query[:512])  # Truncate to model max length
+            
+            # Special handling for stock info vs fundamental
+            if result[0]["label"] == "LABEL_1":  # stock_info
+                # Check if it's actually a fundamental query
+                stock_tech_keywords = [
+                    "price", "close", "open", "high", "low", 
+                    "rsi", "macd", "sma", "ema", "bollinger",
+                    "volume", "technical", "chart", "indicator"
+                ]
+                if not any(keyword in query_lower for keyword in stock_tech_keywords):
+                    return "fundamental"
+                    
+            return categories.get(result[0]["label"], "fundamental")
+            
+        except Exception as e:
+            logger.error(f"Classification error: {str(e)}")
+            return "fundamental"  # Default to fundamental query type
+    
+    def retrieve_context(self, query: str, query_type: str, k: int = 3) -> List[str]:
+        """Retrieve relevant context - reduced from 5 to 3 for efficiency"""
+        try:
+            db_map = {
+                "broker_contact": "broker",
+                "stock_info": "company",
+                "regulations": "pdf",
+                "fundamental": "fundamental"
+            }
+            
+            if query_type not in db_map:
+                logger.warning(f"Unknown query type: {query_type}")
+                return []
+            
+            db = self.vector_dbs.get(db_map[query_type])
+            if not db:
+                logger.error(f"No DB available for {query_type}")
+                return []
+            
+            # First-stage retrieval
+            docs = db.similarity_search(query, k=k*2)
+            contexts = [doc.page_content for doc in docs]
+            
+            # Second-stage reranking only if reranker is loaded
+            if len(contexts) > 1 and self.reranker:
+                pairs = [(query, ctx) for ctx in contexts]
+                scores = self.reranker.predict(pairs)
+                contexts = [ctx for _, ctx in sorted(zip(scores, contexts), reverse=True)]
+            
+            return contexts[:k]
+        except Exception as e:
+            logger.error(f"Context retrieval error: {str(e)}")
+            return []
 
+    def generate_response(self, query: str, query_type: str, context: str) -> str:
+        """Generate response using LLM with optimized prompts"""
+        try:
+            # If LLM not loaded, return fallback
+            if not self.llm_model or not self.llm_tokenizer:
+                return self._get_fallback_response(query_type)
+                
+            prompt_template = self.prompt_templates.get(query_type, self.prompt_templates["fundamental"])
+            prompt = prompt_template.format(context=context, question=query)
+            
+            inputs = self.llm_tokenizer(prompt, return_tensors="pt", padding=True, truncation=True, max_length=512)
+            
+            # Move to model's device
+            if hasattr(self.llm_model, 'device'):
+                inputs = {k: v.to(self.llm_model.device) for k, v in inputs.items()}
+                
+            # Use reasonable number of tokens for responses
+            outputs = self.llm_model.generate(
+                **inputs,
+                max_new_tokens=256,  # Increased for better responses
+                temperature=0.3,
+                top_p=0.9
+            )
+            
+            response = self.llm_tokenizer.decode(outputs[0], skip_special_tokens=True)
+            
+            if "<|assistant|>" in response:
+                response = response.split("<|assistant|>")[-1].strip()
+                
+            return response
+        except Exception as e:
+            logger.error(f"Response generation error: {str(e)}")
+            return self._get_fallback_response(query_type)
 
-# Example test queries (feel free to change or add more)
-test_queries = [
-    "What is the minimum capital requirement for opening a broker company in Nepal?",
-    "IPO को बारेमा जानकारी दिनुहोस्।",  # Nepali query
-    "Which stock had the highest trading volume last week?",
-]
+    def process_query(self, query: str) -> str:
+        """End-to-end query processing with memory efficiency focus"""
+        try:
+            # Language detection and translation
+            original_language = "nepali" if self.translator.detect_language(query) == "ne" else "english"
+            
+            if original_language == "nepali" and self.translator.available:
+                english_query = self.translate_text(query, source_lang="ne", target_lang="en")
+                logger.info(f"Translated query to English: {english_query}")
+                query = english_query  # Use translated query for processing
+            
+            # Query classification
+            query_type = self.classify_query(query)
+            logger.info(f"Classified as: {query_type}")
+            
+            # Context retrieval
+            contexts = self.retrieve_context(query, query_type)
+            if not contexts:
+                logger.warning(f"No context found for query: {query}")
+                response = self._get_fallback_response(query_type)
+            else:
+                # Join contexts with separator for clarity
+                context = ". ".join(contexts)
+                logger.info(f"Retrieved {len(contexts)} context chunks")
+                
+                # Response generation
+                response = self.generate_response(query, query_type, context)
+            
+            # Translate back if original was Nepali and translator is available
+            if original_language == "nepali" and self.translator.available:
+                nepali_response = self.translate_text(response, source_lang="en", target_lang="ne")
+                logger.info("Translated response back to Nepali")
+                return nepali_response
+            
+            return response
+        
+        except Exception as e:
+            logger.error(f"Error processing query: {e}")
+            return "माफ गर्नुहोस्, म अहिले जवाफ दिन सक्दिन।" if self.translator.detect_language(query) == "ne" else "Sorry, I'm unable to respond right now."
 
-# Run predictions for each query and print the streamed result
-for query in test_queries:
-    print(f"\n=== QUERY: {query} ===")
-    for response in pipeline.make_predictions(query):
-        print(response.replace("data: ", "").strip())
+    def _get_fallback_response(self, query_type: str) -> str:
+        """Rule-based fallback when no context is found"""
+        fallbacks = {
+            "broker_contact": "Broker details not found. Visit SEBON's website for updated listings.",
+            "stock_info": "Current stock data unavailable. Check NEPSE's official portal for live updates.",
+            "regulations": "Regulation not found in my database. Refer to SEBON's latest circulars.",
+            "fundamental": "I couldn't find a precise answer. Generally in NEPSE..."
+        }
+        return fallbacks.get(query_type, "Information not available.")
+
+    def unload_models(self):
+        """Unload models to free memory"""
+        logger.info("Unloading models to free memory...")
+        
+        # Unload LLM
+        if self.llm_model:
+            del self.llm_model
+            self.llm_model = None
+            
+        # Unload other models
+        if self.classifier:
+            del self.classifier
+            self.classifier = None
+            
+        if self.reranker:
+            del self.reranker
+            self.reranker = None
+            
+        # Force garbage collection
+        import gc
+        gc.collect()
+        
+        # Clear CUDA cache
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            
+        logger.info("Models unloaded successfully")
+
+def main():
+    # Check system memory
+    total_mem, available_mem = get_system_memory_info()
+    
+    # Check GPU memory
+    gpu_available = torch.cuda.is_available()
+    gpu_memory_gb = 0
+    
+    if gpu_available:
+        gpu_memory = torch.cuda.get_device_properties(0).total_memory
+        gpu_memory_gb = gpu_memory / (1024**3)
+        print(f"GPU Memory: {gpu_memory_gb:.2f}GB")
+    
+    # Determine best configuration based on available hardware
+    use_cpu = not gpu_available
+    use_8bit = False  # Default to not use 8-bit quantization
+    use_4bit = True   # Default to 4-bit quantization
+    
+    if gpu_available:
+        if gpu_memory_gb < 4:  # Very limited GPU memory
+            print("⚠️ Extremely limited GPU memory detected. Using CPU instead...")
+            use_cpu = True
+            use_4bit = False
+        elif gpu_memory_gb < 6:  # Limited GPU memory
+            print("⚠️ Limited GPU memory detected. Using 4-bit quantization...")
+            use_4bit = True
+        elif gpu_memory_gb < 12:  # Moderate GPU memory
+            print("⚠️ Moderate GPU memory detected. Using 8-bit quantization...")
+            use_8bit = True
+            use_4bit = False
+        else:
+            print("✅ Sufficient GPU memory detected. Using FP16.")
+            use_8bit = False
+            use_4bit = False
+    else:
+        print("⚠️ No GPU detected. Using CPU mode.")
+    
+    # Create pipeline
+    pipeline = PredictionPipeline(use_cpu=use_cpu, use_8bit=use_8bit, use_4bit=use_4bit)
+    
+    if pipeline.load_models():
+        pipeline.load_vector_dbs()
+        
+        try:
+            # Interactive mode
+            print("\n=== NEPSE-Navigator Chat ===")
+            print("Type 'exit' to quit")
+            
+            while True:
+                query = input("\nQuery: ")
+                if query.lower() in ['exit', 'quit', 'q']:
+                    break
+                    
+                print("Processing...")
+                response = pipeline.process_query(query)
+                print(f"Response: {response}")
+                
+        except KeyboardInterrupt:
+            print("\nExiting...")
+        finally:
+            # Clean up
+            pipeline.unload_models()
+    else:
+        print("Failed to load models. Please check the logs for more information.")
+
+if __name__ == "__main__":
+    main()

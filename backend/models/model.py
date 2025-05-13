@@ -1,1184 +1,735 @@
-import base64
-import difflib
-import json
-import logging
-import re
-import time
-import urllib.parse
-from datetime import datetime
-from difflib import get_close_matches
-from io import BytesIO
-from pathlib import Path
-from statistics import mean
-from threading import Thread
-from typing import Dict, List, Optional, Tuple
-
-import faiss
-import numpy as np
-import pandas as pd
-import requests
-import torch
-from FlagEmbedding import FlagModel
-from langchain_community.vectorstores import FAISS
+from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
 from langchain_huggingface import HuggingFaceEmbeddings
-from langdetect import detect
-from ta.momentum import RSIIndicator
-from ta.trend import MACD, EMAIndicator, SMAIndicator
-from ta.volatility import BollingerBands
-from transformers import (AutoModelForCausalLM, AutoTokenizer,
-                          TextIteratorStreamer)
+from langchain_community.vectorstores import FAISS
+from FlagEmbedding import FlagModel
+import requests, re, urllib.parse, torch
+from threading import Thread
 
-# Set up logging
-logging.basicConfig(level=logging.INFO) # to confirm that things are working as expected
-logger = logging.getLogger(__name__)
 
 class PredictionPipeline:
     def __init__(self):
-        """Initialize the PredictionPipeline with model and data paths."""
-        self.model_id = "TheBloke/TinyLlama-1.1B-Chat-v1.0-GPTQ"
-        self.temperature = 0.2
-        self.bit = ["main"]
-        self.sentence_transformer_modelname = 'sentence-transformers/all-mpnet-base-v2'
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.reranker_modelname = 'BAAI/bge-reranker-large'
-        self.VALID_TICKERS = self.load_valid_tickers()
-        self.routing_rules = [
-            {"keywords": ["compare", "fundamental"], "min_tickers": 2, "function": "format_fundamental_comparison"},
-            {"keywords": ["fundamental"], "min_tickers": 1, "function": "format_fundamental_table"},
-            {"keywords": ["compare"], "min_tickers": 2, "function": "get_stock_comparison"},
-            {"keywords": ["monthly", "summary"], "min_tickers": 1, "function": "get_monthly_performance_summary"},
-            {"keywords": ["weekly"], "min_tickers": 1, "function": "weekly_summary"},
-            {"keywords": ["volatility", "risk"], "min_tickers": 1, "function": "get_volatility_analysis"},
-            {"keywords": ["technical"], "min_tickers": 1, "function": "get_technical_indicator_summary"},
-            {"keywords": ["trend"], "min_tickers": 1, "function": "get_trend_analysis"},
-            {"keywords": ["daily", "today"], "min_tickers": 1, "function": "get_daily_summary"},
-        ]
-
-        logger.info(f"1. Device being utilized: {self.device}")
-        # Define absolute vector store paths
-        base_dir = Path(__file__).resolve().parent.parent
-        vector_data_dir = base_dir / "data" / "vector data"
-        self.vector_db_paths = {
-            "broker": vector_data_dir / "broker_vector_db",
-            "fundamental": vector_data_dir / "fundamental_vector_db",
-            "pdf": vector_data_dir / "pdf_vector_db",
-            "company": vector_data_dir / "company_vector_db"
-        }
-        self.vector_dbs = {}
-
-    def fuzzy_match_ticker(self, word):
-        matches = get_close_matches(word.upper(), self.VALID_TICKERS, n=1, cutoff=0.8)
-        return matches[0] if matches else None
-
-    def classify_intent_with_llm(self, query: str) -> str:
-        prompt = f"Classify this input into one of: [trend, comparison, volatility, fundamentals, technical, daily].\nInput: {query}"
-        return self.get_llm_analysis(prompt).strip().lower()
-
-
-    def detect_language(self, text: str) -> str:
-        """
-        Detects the language code of the input text.
-        Returns: 'en', 'ne', or full ISO 639-1 language code like 'es', 'fr', etc.
-        """
+        # At the beginning of your script, before loading models
         try:
-            lang = detect(text)
-            return lang
-        except Exception as e:
-            logger.warning(f"Language detection failed: {e}")
-            return "unknown"
-    
-    def load_valid_tickers(self) -> set:
-        """Dynamically load ticker symbols from JSON files in updated_company_data"""
-        try:
-            base_path = Path(__file__).parent.parent
-            data_dir = base_path / "data" / "updated_company_data"
-            
-            if not data_dir.exists():
-                logger.error(f"Directory not found: {data_dir}")
-                return set()
-
-            # Get all .json files and extract ticker names (uppercase)
-            return {
-                file.stem.upper()  # Remove .json extension and normalize case
-                for file in data_dir.glob("*.json")
-                if file.is_file()
-            }
-        except Exception as e:
-            logger.error(f"Error loading valid tickers: {e}")
-            return set() 
-        
-    def load_model_and_tokenizers(self) -> None:
-        """Load the language model and tokenizer."""
-        try:
-            self.model = AutoModelForCausalLM.from_pretrained(
-                self.model_id,
-                device_map="auto",
-                trust_remote_code=True,
-                revision=self.bit[0]
-            )
-            self.tokenizer = AutoTokenizer.from_pretrained(
-                self.model_id,
-                use_fast=True,
-                trust_remote_code=True,
-                revision=self.bit[0],
-                timeout= 50.0
-            )
-            self.streamer = TextIteratorStreamer(
-                self.tokenizer,
-                skip_prompt=True,
-                skip_special_tokens=True,
-                skip_eos_token=True,
-                decode_kwargs={"clean_up_tokenization_spaces": True},
-                buffer_size=1
-            )
-            logger.info(f"2. {self.model_id} has been successfully loaded")
-            # logger.debug(f"GPU memory after model: {torch.cuda.memory_allocated() / 1024**3:.2f} GiB")
-        except Exception as e:
-            logger.error(f"Error loading model and tokenizer: {e}")
-            raise
-
-    def load_sentence_transformer(self) -> None:
-        """Load the sentence transformer model."""
-        try:
-            # Check for model name early
-            if not self.sentence_transformer_modelname:
-                raise ValueError("Sentence transformer model name is not set.")
-
-            logger.info(f"Loading sentence transformer: {self.sentence_transformer_modelname}")
-            
-            # Load model
-            self.sentence_transformer = HuggingFaceEmbeddings(
-                model_name=self.sentence_transformer_modelname,
-                model_kwargs={'device': self.device},
-            )
-            
-            logger.info(f"3. Sentence Transformer '{self.sentence_transformer_modelname}' loaded on {self.device}")
-            
-            # Log memory (only if CUDA is available)
+            # Force CUDA initialization
+            import torch
             if torch.cuda.is_available():
-                mem = torch.cuda.memory_allocated() / 1024**3
-                logger.debug(f"GPU memory used after embedding model load: {mem:.2f} GiB")
-                
+                device = torch.device("cuda")
+                # Create a small tensor to initialize CUDA
+                dummy = torch.ones(1).to(device)
+                print(f"CUDA initialized successfully on {torch.cuda.get_device_name(0)}")
+            else:
+                print("CUDA not available")
         except Exception as e:
-            logger.exception("Error while loading the sentence transformer model.")
-            raise
+            print(f"CUDA initialization error: {str(e)}")
+        self.model_id = "TheBloke/neural-chat-7B-v3-1-GPTQ" #'TheBloke/Starling-LM-7B-alpha-GPTQ' 
+        self.temperature = 0.3
+        self.bit = ["gptq-4bit-32g-actorder_True", "gptq-8bit-128g-actorder_True"]
+        self.sentence_transformer_modelname = 'sentence-transformers/all-mpnet-base-v2' # 'sentence-transformers/all-MiniLM-L6-v2'
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        print(f"1. Device being utilized: {self.device} !!!")
 
 
-    def load_reranking_model(self) -> None:
-        """Load the reranking model."""
-        try:
-            use_fp16 = torch.cuda.is_available()
-            logger.info(f"Loading reranker '{self.reranker_modelname}' (use_fp16={use_fp16})")
-            self.reranker = FlagModel(
-                self.reranker_modelname,
-                use_fp16=use_fp16
-            )
-            logger.info("4. Re-Ranking Algorithm Loaded Successfully")
-        except Exception:
-            logger.exception("Error loading reranking model")
-            raise
+    def load_model_and_tokenizers(self):
+        '''
+        This method will initialize the tokenizer and our LLM model and the streamer class.
+        '''
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_id, torch_dtype=torch.float16, device_map=self.device,  use_fast=True, model_max_length=4000)
+        self.model = AutoModelForCausalLM.from_pretrained(self.model_id,  device_map=self.device, trust_remote_code=False,
+                                                          revision=self.bit[1]) 
+        self.streamer = TextIteratorStreamer(self.tokenizer, skip_prompt=True)
+        print(f'2. {self.model_id} has been successfully loaded !!!')
+
+    def load_sentence_transformer(self):
+        '''
+        This method will initialize our sentence transformer model to generate embeddings for a given query.
+        '''
+        self.sentence_transformer = HuggingFaceEmbeddings(
+                                model_name=self.sentence_transformer_modelname,
+                                model_kwargs={'device':self.device},
+                            )
+        print("3. Sentence Transformer Loaded !!!!!!")
 
 
-    def load_embeddings(self):
+    def load_reranking_model(self):
+        '''
+        An opensoure reranking model called bge-reranker from huggingface is utilized to perform reranking on the retrived relevant documents from vector store.
+        This method will initialize the reranking model.        
+        '''
+        self.reranker = FlagModel('BAAI/bge-reranker-large', use_fp16=True)  # 'BAAI/bge-reranker-large'->2GB BAAI/bge-reranker-base-> 1GB
+        print("4. Re-Ranking Algorithm Loaded !!!")
         
-        def _load_domain(domain: str, db_path: Path):
-            logger.info(f"Loading vector store for '{domain}' from {db_path}")
-            if not db_path.exists():
-                logger.warning(f"Directory missing: {db_path}")
-                return
+    def load_embeddings(self):
+        '''
+        Load all four vector databases with safe deserialization
+        '''
+        # Broker-related information
+        self.broker_vector_db = FAISS.load_local(
+            "../data/vectordata/broker_vector_db", 
+            self.sentence_transformer,
+            allow_dangerous_deserialization=True
+        )
+        
+        # Fundamental data of stocks
+        self.fundamental_vector_db = FAISS.load_local(
+            "../data/vectordata/fundamental_vector_db", 
+            self.sentence_transformer,
+            allow_dangerous_deserialization=True
+        )
+        
+        # Company/stock details from 2008-2025
+        self.company_vector_db = FAISS.load_local(
+            "../data/vectordata/company_vector_db", 
+            self.sentence_transformer,
+            allow_dangerous_deserialization=True
+        )
+        
+        # General NEPSE information, rules, IPOs, etc.
+        self.pdf_vector_db = FAISS.load_local(
+            "../data/vectordata/pdf_vector_db", 
+            self.sentence_transformer,
+            allow_dangerous_deserialization=True
+        )
 
+        # ✅ FIX: Create a dictionary for easier debugging
+        self.faiss_stores = {
+            "broker_vector_db": self.broker_vector_db,
+            "fundamental_vector_db": self.fundamental_vector_db,
+            "company_vector_db": self.company_vector_db,
+            "pdf_vector_db": self.pdf_vector_db
+        }
+        print("\nTesting manual FAISS search...")
+
+        try:
+            query_embedding = pipeline.sentence_transformer.embed_query("test query")
+            print("Query Embedding Shape:", len(query_embedding))
+            
+            docs_and_scores = pipeline.broker_vector_db.similarity_search_by_vector(query_embedding, k=5)
+            print("Retrieved docs:", docs_and_scores)
+
+        except Exception as e:
+            print("Manual FAISS search error:", str(e))
+
+        
+        # Debugging info for each store
+        for store_name, vector_store in self.faiss_stores.items():
             try:
-                files = list(db_path.iterdir())
-                if not files:
-                    logger.warning(f"No files in: {db_path}")
-                    return
-            except Exception as e:
-                logger.error(f"Cannot list {db_path}: {e}")
-                return
-
-            index_file = db_path / "index.faiss"
-            if not index_file.exists():
-                logger.warning(f"index.faiss not found in {db_path}")
-                return
-
-            try:
-                vec_db = FAISS.load_local(
-                    folder_path=str(db_path),
-                    embeddings=self.sentence_transformer,
-                    allow_dangerous_deserialization=True
-                )
-
-                # Warm-up search
+                print(f"Vector store '{store_name}' stats:")
+                print(f"- Index size: {vector_store.index.ntotal}")
                 try:
-                    dummy_vec = np.zeros((1, vec_db.index.d), dtype='float32')
-                    vec_db.index.search(dummy_vec, 1)
-                    logger.debug(f"Warm-up search done for {domain}")
-                except Exception as we:
-                    logger.warning(f"Warm-up search failed for {domain}: {we}")
+                    # Test manual embedding
+                    query_embedding = self.sentence_transformer.embed_query("test")
+                    print(f"- Test Embedding Shape: {len(query_embedding)}")
+                except Exception as e:
+                    print(f"- Embedding error: {e}")
 
-                # Metadata logging
-                try:
-                    count = vec_db.index.ntotal
-                    dim = vec_db.index.d
-                    logger.info(f"Index '{domain}': dimension={dim}, entries={count}")
-                except Exception:
-                    pass
-
-                self.vector_dbs[domain] = vec_db
-                logger.info(f"Loaded FAISS store for '{domain}' successfully")
             except Exception as e:
-                logger.error(f"Failed loading {domain}: {e}")
-
-        # Load each domain in parallel
-        threads = []
-        for domain, path in self.vector_db_paths.items():
-            t = Thread(target=_load_domain, args=(domain, path))
-            t.start()
-            threads.append(t)
-        for t in threads:
-            t.join()
-
-        logger.info("All vector stores loaded successfully")
+                print(f"- Error in store '{store_name}': {str(e)}")
+        
+        print("5. All FAISS vector stores loaded successfully!!!")
 
 
-    def is_text_nepali(self, text: str) -> bool:
-        """Detect if text contains Nepali characters."""
+    def determine_relevant_db(self, question: str):
+        """
+        Determine which vector database to query based on the question content.
+        Returns the best-matching vector DB based on keyword analysis.
+        
+        Database categories:
+        - broker_vector_db: Broker details (not rules)
+        - fundamental_vector_db: Stock fundamental data
+        - company_vector_db: Stock details and historical data (2008-2025)
+        - pdf_vector_db: General queries, rules, technical information about NEPSE, IPOs
+        """
+        question_lower = question.lower()
+        
+        # Define keywords for each category
+        category_keywords = {
+            "broker": {
+                "keywords": ['broker', 'brokerage', 'stock broker', 'broker firm', 'broker detail', 
+                            'broker information', 'broker contact', 'broker location', 'broker address',
+                            'broker profile', 'list of brokers'],
+                "db": self.broker_vector_db
+            },
+            "fundamental": {
+                "keywords": ['fundamental', 'pe ratio', 'eps', 'dividend', 'financial ratio',
+                            'book value', 'earning', 'profit', 'revenue', 'balance sheet',
+                            'income statement', 'cash flow', 'financial statement', 'market cap',
+                            'roa', 'roe', 'debt to equity', 'dividend yield', 'peg ratio'],
+                "db": self.fundamental_vector_db
+            },
+            "company": {
+                "keywords": ['company', 'stock', 'share', 'price history', 'trading history', 'stock price',
+                            'stock trend', 'stock movement', 'historical data', 'stock performance',
+                            'company performance', 'market performance', 'stock chart'] +
+                            [str(year) for year in range(2008, 2026)],  # Years 2008-2025
+                "db": self.company_vector_db
+            },
+            "general": {
+                "keywords": ['rule', 'regulation', 'ipo', 'nepse', 'made in nepal', 'policy', 'guideline',
+                            'requirement', 'procedure', 'trading rule', 'market rule', 'technical',
+                            'how to', 'what is', 'process', 'secondary market', 'primary market'],
+                "db": self.pdf_vector_db
+            }
+        }
+        
+        # Count matches for each category
+        category_matches = {category: 0 for category in category_keywords}
+        
+        for category, info in category_keywords.items():
+            for keyword in info["keywords"]:
+                if keyword in question_lower:
+                    category_matches[category] += 1
+        
+        # Find category with most keyword matches
+        best_match = max(category_matches.items(), key=lambda x: x[1])
+        
+        # If we have matches, return the corresponding database
+        if best_match[1] > 0:
+            return category_keywords[best_match[0]]["db"]
+        
+        # Fallback to general database if no keywords match
+        return self.pdf_vector_db
+
+    def rerank_contexts(self, query, contexts, number_of_reranked_documents_to_select=3):
+        '''
+        Perform reranking on the retrieved documents with special handling for counting queries
+        across all entity types (brokers, companies, stocks, etc.)
+        '''
+        query_lower = query.lower()
+        
+        # Check if this is a counting query
+        counting_patterns = [
+            "how many", "count", "total number", "number of", 
+            "list all", "show all", "all the", "count of"
+        ]
+        is_counting_query = any(pattern in query_lower for pattern in counting_patterns)
+        
+        # Entity types we might want to count
+        countable_entities = [
+            "broker", "company", "stock", "share", "ipo", 
+            "firm", "organization", "corporation", "business",
+            "dividend", "sector", "industry", "investor"
+        ]
+        
+        # Check if we're counting any of these entities
+        target_entity = None
+        for entity in countable_entities:
+            if entity in query_lower or f"{entity}s" in query_lower:  # Handle plurals
+                target_entity = entity
+                break
+        
+        # Potential locations or filters in the query
+        filters = [
+            "kathmandu", "lalitpur", "bhaktapur", "pokhara", 
+            "nepal", "valley", "city", "location", "area", "region",
+            "sector", "industry", "profitable", "dividend", "year",
+            "2023", "2024", "2025", "active", "licensed"
+        ]
+        
+        has_filter = any(filter_term in query_lower for filter_term in filters)
+        
+        # For counting queries with entities, retrieve more documents
+        if is_counting_query and target_entity:
+            # Increase the number based on whether there's a filter
+            if has_filter:
+                # With filters, we need more docs to ensure accurate counting
+                retrieval_count = min(100, len(contexts))
+            else:
+                # For broad counts, we may need almost all documents
+                retrieval_count = min(200, len(contexts))
+                
+            # For very specific questions that might need all data
+            if "all" in query_lower or "every" in query_lower:
+                retrieval_count = len(contexts)  # Get all available contexts
+        else:
+            # For normal queries, use the specified number
+            retrieval_count = number_of_reranked_documents_to_select
+        
+        # Standard reranking process
+        embeddings_1 = self.reranker.encode(query)
+        embeddings_2 = self.reranker.encode(contexts)
+        similarity = embeddings_1 @ embeddings_2.T
+
+        number_of_contexts = len(contexts)
+        if retrieval_count > number_of_contexts:
+            retrieval_count = number_of_contexts
+
+        highest_ranked_indices = sorted(range(len(similarity)), 
+                                    key=lambda i: similarity[i], 
+                                    reverse=True)[:retrieval_count]
+        return [contexts[index] for index in highest_ranked_indices]
+    
+
+    def is_text_nepali(self, text):
+        '''
+        This method checks if a question asked by the user contains any nepali word. If so, the response from the LLM is also returned in Nepali -
+        - using google translate API
+
+        parameters:
+        text -> the question asked by the user
+
+        returns: bool
+        True if the text contains any nepali word else false
+        '''
         nepali_regex = re.compile(r'[\u0900-\u097F]+')
         return bool(nepali_regex.search(text))
+    
 
-    def translate_using_google_api(self, text: str, source_language: str = "auto", target_language: str = "ne", timeout: int = 5) -> str:
-        """Translate text using Google Translate API."""
+    def translate_using_google_api(self, text, source_language = "auto", target_language = "ne", timeout=5):
+        '''
+        This function has been copied from here:
+        # https://github.com/ahmeterenodaci/easygoogletranslate/blob/main/easygoogletranslate.py
+
+        This free API is used to perform translation between English to Nepali and vice versa.
+
+        parameters: 
+        source_language -> the language code for the source language
+        target_language -> the new language to which the text is to be translate 
+
+        returns
+        '''
         pattern = r'(?s)class="(?:t0|result-container)">(.*?)<'
         escaped_text = urllib.parse.quote(text.encode('utf8'))
-        url = f'https://translate.google.com/m?tl={target_language}&sl={source_language}&q={escaped_text}'
-        try:
-            response = requests.get(url, timeout=timeout)
-            result = response.text.encode('utf8').decode('utf8')
-            matches = re.findall(pattern, result)
-            return matches[0] if matches else text
-        except Exception as e:
-            logger.error(f"Translation failed: {e}")
-            return text
+        url = 'https://translate.google.com/m?tl=%s&sl=%s&q=%s'%(target_language, source_language, escaped_text)
+        response = requests.get(url, timeout=timeout)
+        result = response.text.encode('utf8').decode('utf8')
+        result = re.findall(pattern, result)  
+        return result
+    
+    def split_and_translate_text(self, text, source_language = "auto", target_language = "ne", max_length=5000):
+        """
+        Split the input text into sections with a maximum length.
+        
+        Parameters:
+        - text: The input text to be split.
+        - max_length: The maximum length for each section (default is 5000 characters).
 
-    def perform_translation(self, question: str, source_language: str, target_language: str) -> str:
-        """Handle translation for long texts by splitting if necessary."""
+        Returns:c
+        A list of strings, each representing a section of the input text.
+        """
+
+        if source_language == "en":
+            splitted_text = text.split(".")
+        elif source_language == "ne":
+            splitted_text = text.split("।")
+        else:
+            splitted_text = [text[i:i+max_length] for i in range(0, len(text), max_length)]
+
+        # perform translation (the free google api can only perform translation for 5000 characters max. So, splitting the text is necessary )
+        translate_and_join_splitted_text = " ".join([self.translate_using_google_api(i, source_language, target_language)[0] for i in splitted_text])
+        return translate_and_join_splitted_text
+    
+    def perform_translation(self, question, source_language, target_language):
         try:
+            # Check if the length of the question is greater than 5000 characters
             if len(question) > 5000:
-                if source_language == "en":
-                    splitted_text = question.split(".")
-                elif source_language == "ne":
-                    splitted_text = question.split("।")
-                else:
-                    splitted_text = [question[i:i + 5000] for i in range(0, len(question), 5000)]
-                translated_text = " ".join([self.translate_using_google_api(i, source_language, target_language) for i in splitted_text])
-                return translated_text
-            return self.translate_using_google_api(question, source_language, target_language)
+                # If so, split and translate the text using a custom method
+                return self.split_and_translate_text(question, source_language, target_language)
+            else:
+                # If not, use the Google Translation API to translate the entire text
+                return self.translate_using_google_api(question, source_language, target_language)[0]
         except Exception as e:
-            logger.error(f"Error in perform_translation: {e}")
-            return f"An error occurred, [{e}], while working with Google Translation API"
+            return [f"An error occurred, [{e}], while working with Google Translation API"]
 
-    def select_vector_db(self, question: str) -> str:
-        """Pick the best vector DB, with a few hard‐coded overrides and then a semantic fallback."""
-        question_lower = question.lower()
+    def make_predictions(self, question, top_n_values=10):
+        '''
+        Main prediction method with enhanced database-specific prompts for NEPSE data
 
-        # 1) “Hard” keyword overrides
-        if "broker" in question_lower:
-            return "broker"
-        if "fundamental" in question_lower or any(kw in question_lower for kw in ["eps", "p/e", "book value", "pbv", "market cap"]):
-            return "fundamental"
-        if "nepse" in question_lower or any(kw in question_lower for kw in ["rule", "regulation", "policy", "pdf"]):
-            return "pdf"
-        if any(kw in question_lower for kw in ["rsi", "macd", "moving average", "bollinger", "technical analysis", "stock price", "daily"]):
-            return "company"
+        Args:
+            question: User's question text (can be in English or Nepali)
+            top_n_values: Maximum number of documents to retrieve initially
 
-        # 2) If embeddings aren’t loaded yet, default
-        if not self.vector_dbs:
-            return "pdf"
-
-        # 3) Semantic fallback: pick the domain whose top-1 distance is smallest
-        q_emb = np.array(self.sentence_transformer.embed_query(question), dtype="float32").reshape(1, -1)
-        best_domain, best_dist = None, float("inf")
-
-        for domain, vec_db in self.vector_dbs.items():
-            try:
-                D, _ = vec_db.index.search(q_emb, k=1)
-                dist = float(D[0][0])
-                if dist < best_dist:
-                    best_dist, best_domain = dist, domain
-            except Exception:
-                continue
-
-        # 4) If the best semantic match is still very far, default
-        if best_domain is None or best_dist > 0.1:
-            return "pdf"
-
-        return best_domain
-
-
-    def rerank_contexts(
-        self,
-        query: str,
-        contexts: List[str],
-        k: int = 3
-    ) -> List[str]:
-        """Rerank contexts by cosine similarity to the query, return top-k."""
-        if not contexts:
-            return []
-
-        # 1) Encode without gradients
-        with torch.inference_mode():
-            q_vec = self.reranker.encode(query)              # shape (d,)
-            c_vecs = self.reranker.encode(contexts)          # shape (n, d)
-
-        # 2) Normalize for cosine similarity
-        q_vec = q_vec / q_vec.norm()
-        c_vecs = c_vecs / c_vecs.norm(dim=1, keepdim=True)
-
-        # 3) Compute similarities and select top-k
-        sims = (c_vecs @ q_vec).cpu().numpy()                # shape (n,)
-        topk = np.argsort(-sims)[:min(k, len(sims))]        # descending order
-
-        # 4) Optionally log scores
-        for idx in topk:
-            logger.debug(f"Context[{idx}] score: {sims[idx]:.4f}")
-
-        # 5) Return the top contexts
-        return [contexts[i] for i in topk]
-
-
-    def generate_next_steps(self, company_name: str, company_type: Optional[str] = None) -> str:
-        """Generate follow-up suggestions based on company type."""
-        options = ["👉 Show historical performance or technical indicators?"]
-        if company_type:
-            company_type = company_type.lower()
-            if company_type in ["bank", "commercial bank", "development bank"]:
-                options.insert(0, f"👉 Compare {company_name} with other banks (commercial or development)?")
-            elif company_type in ["hydro", "hydropower"]:
-                options.insert(0, f"👉 Compare {company_name} with other hydropower companies?")
-            elif company_type in ["mutual fund", "investment fund"]:
-                options.insert(0, f"👉 Compare {company_name} with other mutual or investment funds?")
-            elif company_type in ["insurance", "life insurance", "non-life insurance"]:
-                options.insert(0, f"👉 Compare {company_name} with other insurance companies?")
-            elif company_type in ["finance", "microfinance"]:
-                options.insert(0, f"👉 Compare {company_name} with other finance or microfinance companies?")
-        return "<br><br>Would you like me to:<br>" + "<br>".join(options)
-
-    def generate_labels(self, data: Dict) -> str:
-        """Generate labels for earnings, valuation, and risk based on fundamental metrics."""
+        Returns:
+            Generator yielding response tokens for streaming
+        '''
         try:
-            eps = float(data.get("EPS", 0))
-            pe_ratio = float(data.get("P/E Ratio", 0))
-            pbv = float(data.get("PBV", 0))
+            # Check if question is in Nepali
+            is_original_language_nepali = self.is_text_nepali(question)
 
-            # Earnings Label
-            if eps >= 30:
-                earnings_label = "💹 Earnings: Very Strong 💪"
-            elif eps >= 15:
-                earnings_label = "💹 Earnings: Strong ✅"
-            elif eps >= 5:
-                earnings_label = "💹 Earnings: Moderate ⚠️"
-            else:
-                earnings_label = "💹 Earnings: Weak ❌"
-
-            # Valuation Label
-            if pe_ratio < 10:
-                valuation_label = "💰 Valuation: Undervalued 🟢"
-            elif 10 <= pe_ratio <= 20:
-                valuation_label = "💰 Valuation: Reasonable 👍"
-            else:
-                valuation_label = "💰 Valuation: Overvalued 🔴"
-
-            # Risk Label
-            if pbv < 1:
-                risk_label = "📉 Risk Level: Low 🛡️"
-            elif pbv < 2:
-                risk_label = "📉 Risk Level: Moderate ⚠️"
-            else:
-                risk_label = "📉 Risk Level: High 🔥"
-        except Exception as e:
-            logger.error(f"Error generating labels: {e}")
-            earnings_label = "💹 Earnings: N/A"
-            valuation_label = "💰 Valuation: N/A"
-            risk_label = "📉 Risk Level: N/A"
-
-        return f"<br><br>🔍 Summary:<br>{earnings_label}<br>{valuation_label}<br>{risk_label}<br>"
-
-    def format_fundamental_table(self, companies_data: List[Dict]) -> Tuple[str, str]:
-        """Format a table for fundamental data with LLM insights and next steps."""
-        thresholds = {
-            "EPS": 20,
-            "P/E Ratio": 15,
-            "PBV": 1.5,
-            "Market Capitalization": 10000000000
-        }
-        meanings = {
-            "EPS": "Higher EPS = More Profitability",
-            "P/E Ratio": "Low P/E = Potential undervaluation",
-            "PBV": "Lower PBV = Stock may be undervalued",
-            "Market Capitalization": "Larger cap = More stability"
-        }
-
-        company_names = [data.get("Company", f"Stock {i+1}") for i, data in enumerate(companies_data)]
-        table = "<table border='1'><tr><th>Metric</th>" + "".join(
-            f"<th>{name}</th>" for name in company_names
-        ) + "<th>Meaning</th></tr>"
-
-        metrics = ["EPS", "P/E Ratio", "PBV", "Market Capitalization"]
-        metric_values = {metric: [data.get(metric, "N/A") for data in companies_data] for metric in metrics}
-
-        for metric in metrics:
-            row = f"<td>{metric}</td>"
-            for value in metric_values[metric]:
-                color = "black"
-                if value != "N/A" and metric in thresholds:
-                    try:
-                        val = float(value)
-                        if metric == "EPS" and val > thresholds[metric]:
-                            color = "green"
-                        elif metric == "EPS" and val < 10:
-                            color = "red"
-                        elif metric == "P/E Ratio" and val < thresholds[metric]:
-                            color = "green"
-                        elif metric == "P/E Ratio" and val > 20:
-                            color = "red"
-                        elif metric == "PBV" and val < thresholds[metric]:
-                            color = "green"
-                        elif metric == "PBV" and val > 2:
-                            color = "red"
-                        elif metric == "Market Capitalization" and val > thresholds[metric]:
-                            color = "green"
-                        elif metric == "Market Capitalization" and val < 1000000000:
-                            color = "red"
-                    except ValueError:
-                        pass
-                row += f"<td style='color:{color}'>{value}</td>"
-            row += f"<td>{meanings[metric]}</td>"
-            table += f"<tr>{row}</tr>"
-
-        table += "</table>"
-
-        prompt = "Based on this data, provide a fundamental analysis in simple language. Mention earnings strength, valuation (P/E, PBV), and overall financial health."
-        formatted_data_text = "\n".join([f"{k}: {v}" for company in companies_data for k, v in company.items()])
-        full_prompt = prompt + "\n" + formatted_data_text
-        insights = self.get_llm_analysis(full_prompt)
-
-        labels = self.generate_labels(companies_data[0])
-        company_type = companies_data[0].get("Company Type", None)
-        next_steps = self.generate_next_steps(company_names[0], company_type)
-
-        return table, insights + labels + next_steps
-
-    def format_fundamental_comparison(self, companies_data: List[Dict]) -> Tuple[str, str]:
-        symbols = params.get("symbols", [])
-        fundamentals = self.load_fundamental_data()
-        logger.info(f"Filtering Symbols: {symbols}")
-        filtered = []
-        for f in fundamentals:
-            symbol = f.get("Company Symbol")
-            if symbol in symbols:
-                filtered.append(f)
-            else:
-                logger.debug(f"Skipped symbol: {symbol} (not in {symbols})")
-
-        """Compare fundamental metrics of companies and provide insights."""
-        thresholds = {
-            "EPS": 20,
-            "P/E Ratio": 15,
-            "PBV": 1.5,
-            "Market Capitalization": 10000000000
-        }
-        meanings = {
-            "EPS": "Higher EPS = More Profitability",
-            "P/E Ratio": "Low P/E = Potential undervaluation",
-            "PBV": "Lower PBV = May be undervalued",
-            "Market Capitalization": "Higher = Stability & investor confidence"
-        }
-
-        company_names = [data.get("Company Name", f"Stock {i+1}") for i, data in enumerate(companies_data)]
-        metrics = ["EPS", "P/E Ratio", "PBV", "Market Capitalization"]
-        metric_values = {metric: [data.get(metric, "N/A") for data in companies_data] for metric in metrics}
-
-        table = "<table border='1'><tr><th>Metric</th>" + "".join(
-            f"<th>{name}</th>" for name in company_names
-        ) + "<th>Meaning</th></tr>"
-
-        for metric in metrics:
-            row = f"<td>{metric}</td>"
-            for value in metric_values[metric]:
-                color = "black"
+            # Translate if Nepali
+            if is_original_language_nepali:
                 try:
-                    val = float(value) if isinstance(value, (int, float, str)) and str(value).replace(".", "").isdigit() else None
-                    if val is not None:
-                        if metric == "EPS":
-                            color = "green" if val > thresholds[metric] else "red"
-                        elif metric == "P/E Ratio":
-                            color = "green" if val < thresholds[metric] else "red" if val > 20 else "black"
-                        elif metric == "PBV":
-                            color = "green" if val < thresholds[metric] else "red" if val > 2 else "black"
-                        elif metric == "Market Capitalization":
-                            color = "green" if val > thresholds[metric] else "red" if val < 1e9 else "black"
-                except:
-                    pass
-                row += f"<td style='color:{color}'>{value}</td>"
-            row += f"<td>{meanings[metric]}</td>"
-            table += f"<tr>{row}</tr>"
-
-        table += "</table>"
-
-        formatted_data_text = "\n".join([f"{k}: {v}" for company in companies_data for k, v in company.items()])
-        full_prompt = (
-            "Based on this data, provide a fundamental comparison between the companies in simple language. "
-            "Mention earnings strength, valuation (P/E, PBV), and overall financial health.\n" + formatted_data_text
-        )
-        insight = self.get_llm_analysis(full_prompt)
-
-        next_steps = (
-            "<br><br>Would you like me to:<br>"
-            "👉 Show their technical indicators (like RSI, MACD)?<br>"
-            "👉 Compare them with a third company like NICA?<br>"
-        )
-
-        return table, insight + next_steps
-
-    def get_daily_summary(self, stock_data: Dict, date: str, stock_name: str = "") -> str:
-        """Generate a daily stock summary with price and technical indicators."""
-        try:
-            day = stock_data.get(date)
-            if not day:
-                return f"No data available for {date}."
-
-            price = day["price"]
-            indicators = day.get("indicators", {})
-
-            summary = f"\nDate: {date}\n"
-            if price['open'] > price['prevClose']:
-                summary += f"Open: Rs. \033[32m{price['open']}\033[0m\n"
-            else:
-                summary += f"Open: Rs. \033[31m{price['open']}\033[0m\n"
+                    question = self.perform_translation(question, 'ne', 'en')
+                    print("Translated Question: ", question)
+                    if isinstance(question, list):
+                        yield "data: " + str(question[0])+"\n\n"
+                        yield "data: END\n\n"
+                        return
+                except Exception as e:
+                    print(f"Translation error: {e}")
+                    yield f"data: Sorry, I encountered an error translating your question. Please try asking in English.\n\n"
+                    yield "data: END\n\n"
+                    return
             
-            if price['close'] > price['open']:
-                summary += f"Close: Rs. \033[32m{price['close']}\033[0m ({'⬆' if price['diff'] > 0 else '⬇'} Rs. {abs(price['diff'])} from previous close)\n"
-            else:
-                summary += f"Close: Rs. \033[31m{price['close']}\033[0m ({'⬆' if price['diff'] > 0 else '⬇'} Rs. {abs(price['diff'])} from previous close)\n"
-            
-            summary += f"High: Rs. {price['max']} | Low: Rs. {price['min']}\n"
-            summary += f"Volume: {day['tradedShares']} shares | Amount: Rs. {day['amount']}\n"
-            summary += f"Indicators:\n"
-            summary += f"- SMA: {round(indicators.get('SMA', 0), 2)} | EMA: {round(indicators.get('EMA', 0), 2)}\n"
-
-            rsi = indicators.get("RSI", None)
-            if rsi is not None:
-                rsi_status = "Overbought" if rsi > 70 else "Oversold" if rsi < 30 else "Neutral"
-                summary += f"- RSI: {round(rsi, 2)} ({rsi_status})\n"
-
-            summary += (
-                f"- MACD: {round(indicators.get('MACD', 0), 2)} | "
-                f"Signal: {round(indicators.get('MACD_Signal', 0), 2)} | "
-                f"Histogram: {round(indicators.get('MACD_Hist', 0), 2)}\n"
-            )
-            summary += (
-                f"- BB High: {round(indicators.get('BB_High', 0), 2)} | "
-                f"Mid: {round(indicators.get('BB_Mid', 0), 2)} | "
-                f"Low: {round(indicators.get('BB_Low', 0), 2)}\n"
-            )
-
-            analysis_prompt = (
-                f"Based on the technical indicators for {stock_name} on {date}, "
-                "generate a short analysis explaining the stock's technical state, such as trend, momentum, or volatility."
-            )
-            ai_analysis = self.get_llm_analysis(analysis_prompt)
-
-            next_steps = (
-                "\n\nWould you like to:\n"
-                "👉 View its technical indicator trends over the past week?\n"
-                "👉 See its fundamental analysis?\n"
-                "👉 Compare it with another stock?\n"
-            )
-
-            return summary + "\n\nAI Insight:\n" + ai_analysis.strip() + next_steps
-        except Exception as e:
-            logger.error(f"Error generating daily summary: {e}")
-            return f"Error generating daily summary: {e}"
-
-    def weekly_summary(self, weekly_data: List[Dict], stock_name: str) -> Tuple[str, str]:
-        if not weekly_data or not isinstance(weekly_data, list):
-            return f"No valid weekly data available for {stock_name}.", ""
-
-        meanings = {
-            "Close": "Green = Price went up compared to open",
-            "RSI": "RSI > 70 = Overbought, < 30 = Oversold",
-            "MACD": "Positive = Bullish momentum",
-            "EMA": "Rising EMA = Positive trend",
-            "Flags": "Key signals like MACD crossover or price action"
-        }
-
-        metrics = ["Open", "Close", "High", "Low", "RSI", "MACD", "EMA", "Flags"]
-        table = f"<h3>Weekly Technical Trend Summary: {stock_name}</h3>"
-        table += "<table border='1'><tr><th>Date</th>" + "".join(
-            f"<th>{metric}</th>" for metric in metrics
-        ) + "<th>Meaning</th></tr>"
-
-        for day in weekly_data:
-            row = f"<td>{day.get('date')}</td>"
-            for metric in metrics:
-                if metric == "Open":
-                    value = day.get("price", {}).get("open", "N/A")
-                elif metric == "Close":
-                    value = day.get("price", {}).get("close", "N/A")
-                elif metric == "High":
-                    value = day.get("price", {}).get("max", "N/A")
-                elif metric == "Low":
-                    value = day.get("price", {}).get("min", "N/A")
-                elif metric in ["RSI", "MACD", "EMA"]:
-                    value = day.get("indicators", {}).get(metric, "N/A")
-                else:
-                    value = "N/A"  # Flags not present in data
-                color = "black"
-                try:
-                    if metric == "Close" and isinstance(value, (int, float)):
-                        color = "green" if value > float(day.get("price", {}).get("open", 0)) else "red"
-                    elif metric == "RSI" and isinstance(value, (int, float)):
-                        color = "red" if value > 70 else "green" if value < 30 else "black"
-                    elif metric == "MACD" and isinstance(value, (int, float)):
-                        color = "green" if value > 0 else "red"
-                    elif metric == "EMA" and isinstance(value, (int, float)):
-                        color = "green" if value > float(day.get("price", {}).get("open", 0)) else "red"
-                except:
-                    pass
-                row += f"<td style='color:{color}'>{value}</td>"
-            row += f"<td>{meanings.get(metric, '')}</td>"
-            table += f"<tr>{row}</tr>"
-
-        table += "</table>"
-
-        prompt = f"Analyze this weekly trend data for {stock_name} and provide insights in simple language. Highlight trend strength, momentum signals (MACD, RSI), and general market behavior."
-        formatted_data = "\n".join([
-            f"{d['date']} - Close: {d.get('price', {}).get('close', 'N/A')}, "
-            f"RSI: {d.get('indicators', {}).get('RSI', 'N/A')}, "
-            f"MACD: {d.get('indicators', {}).get('MACD', 'N/A')}, "
-            f"EMA: {d.get('indicators', {}).get('EMA', 'N/A')}, "
-            f"Flags: {'N/A'}"
-            for d in weekly_data
-        ])
-        full_prompt = prompt + "\n" + formatted_data
-        insights = self.get_llm_analysis(full_prompt)
-
-        return table, insights
-
-    def get_volatility_analysis(self, stock_data: Dict, end_date: str, stock_name: str = "") -> Tuple[str, str]:
-        if not stock_data or "data" not in stock_data or not isinstance(stock_data["data"], list):
-            return f"No valid stock data available for {stock_name}.", ""
-        daily_data = sorted(stock_data.get("data", []), key=lambda x: x["date"])
-        recent_data = [d for d in daily_data if d["date"] <= end_date][-14:]
-
-        if len(recent_data) < 5:
-            return f"Not enough data to perform volatility analysis for {stock_name}.", ""
-
-        returns = []
-        true_ranges = []
-        for i in range(1, len(recent_data)):
-            prev = recent_data[i - 1]
-            curr = recent_data[i]
+            # Determine which vector DB to use
             try:
-                close_prev = float(prev["price"]["close"])
-                close_curr = float(curr["price"]["close"])
-                returns.append((close_curr - close_prev) / close_prev * 100)
-                high = float(curr["price"]["max"])
-                low = float(curr["price"]["min"])
-                true_ranges.append(high - low)
-            except (KeyError, TypeError, ValueError) as e:
-                logger.warning(f"Skipping invalid data for {stock_name} on {curr.get('date', 'unknown')}: {e}")
-                continue
-
-        if not returns or not true_ranges:
-            return f"Insufficient valid data for volatility analysis of {stock_name}.", ""
-
-        avg_return = np.mean(returns)
-        std_dev = np.std(returns)
-        atr = np.mean(true_ranges)
-
-        if std_dev < 1:
-            vol_class = "Low"
-            color = "green"
-        elif std_dev < 2.5:
-            vol_class = "Medium"
-            color = "orange"
-        else:
-            vol_class = "High"
-            color = "red"
-
-        report = f"""
-        <h3>Volatility Analysis for {stock_name}</h3>
-        <table border='1' style='border-collapse:collapse;'>
-            <tr><th>Metric</th><th>Value</th><th>Interpretation</th></tr>
-            <tr><td>Average Daily Return</td><td>{avg_return:.2f}%</td><td>{'Positive return trend' if avg_return > 0 else 'Negative return trend'}</td></tr>
-            <tr><td>Standard Deviation of Returns</td><td>{std_dev:.2f}%</td><td>Higher = More volatile, Lower = More stable</td></tr>
-            <tr><td>Average True Range (ATR)</td><td>{atr:.2f}</td><td>Daily price fluctuation magnitude</td></tr>
-            <tr><td>Volatility Classification</td><td style='color:{color}'><b>{vol_class}</b></td><td>Overall price movement behavior</td></tr>
-        </table>
-        """
-
-        prompt = (
-            f"Analyze the following volatility metrics for {stock_name}:\n"
-            f"- Average Return: {avg_return:.2f}%\n"
-            f"- Standard Deviation: {std_dev:.2f}%\n"
-            f"- ATR: {atr:.2f}\n"
-            f"- Volatility: {vol_class}\n"
-            "Provide a brief summary on what this means for an investor or trader."
-        )
-        insights = self.get_llm_analysis(prompt)
-
-        return report, insights
-
-
-    def get_technical_indicator_summary(self, stock_data: Dict, stock_name: str = "") -> Tuple[str, str]:
-        """Generate a summary of technical indicators (RSI, MACD, SMA, EMA, Bollinger Bands)."""
-        daily_data = sorted(stock_data.get("data", []), key=lambda x: x["date"])
-        if len(daily_data) < 5:
-            return f"Not enough data to perform technical indicator analysis for {stock_name}.", ""
-
-        rsi = daily_data[-1].get("indicators", {}).get("RSI", None)
-        macd = daily_data[-1].get("indicators", {}).get("MACD", None)
-        sma = daily_data[-1].get("indicators", {}).get("SMA", None)
-        ema = daily_data[-1].get("indicators", {}).get("EMA", None)
-        bb_high = daily_data[-1].get("indicators", {}).get("BB_High", None)
-        bb_low = daily_data[-1].get("indicators", {}).get("BB_Low", None)
-        bb_mid = daily_data[-1].get("indicators", {}).get("BB_Mid", None)
-
-        table = f"""
-        <h3>Technical Indicator Summary for {stock_name}</h3>
-        <table border='1' style='border-collapse:collapse;'>
-            <tr><th>Metric</th><th>Value</th><th>Interpretation</th></tr>
-        """
-
-        if rsi is not None:
-            rsi_interpretation = "Overbought" if rsi > 70 else "Oversold" if rsi < 30 else "Neutral"
-            table += f"<tr><td>RSI</td><td>{rsi:.2f}</td><td>{rsi_interpretation}</td></tr>"
-        else:
-            table += "<tr><td>RSI</td><td>Not enough data</td><td>RSI requires at least 14 days of data to calculate.</td></tr>"
-
-        if macd is not None:
-            macd_interpretation = "Bullish" if macd > 0 else "Bearish" if macd < 0 else "Neutral"
-            table += f"<tr><td>MACD</td><td>{macd:.2f}</td><td>{macd_interpretation}</td></tr>"
-        else:
-            table += "<tr><td>MACD</td><td>Not enough data</td><td>MACD requires at least 26 days of data to calculate.</td></tr>"
-
-        if sma is not None:
-            sma_interpretation = "Uptrend" if sma > daily_data[-2]["price"]["close"] else "Downtrend"
-            table += f"<tr><td>SMA</td><td>{sma:.2f}</td><td>{sma_interpretation}</td></tr>"
-        else:
-            table += "<tr><td>SMA</td><td>Not enough data</td><td>SMA requires at least 20 days of data to calculate.</td></tr>"
-
-        if ema is not None:
-            ema_interpretation = "Uptrend" if ema > daily_data[-2]["price"]["close"] else "Downtrend"
-            table += f"<tr><td>EMA</td><td>{ema:.2f}</td><td>{ema_interpretation}</td></tr>"
-        else:
-            table += "<tr><td>EMA</td><td>Not enough data</td><td>EMA requires at least 26 days of data to calculate.</td></tr>"
-
-        if bb_high is not None and bb_low is not None:
-            bb_interpretation = "Overbought" if daily_data[-1]["price"]["close"] > bb_high else "Oversold" if daily_data[-1]["price"]["close"] < bb_low else "Normal"
-            table += f"<tr><td>Bollinger Bands</td><td>High: {bb_high:.2f}, Low: {bb_low:.2f}</td><td>{bb_interpretation}</td></tr>"
-        else:
-            table += "<tr><td>Bollinger Bands</td><td>Not enough data</td><td>Bollinger Bands require at least 20 days of data to calculate.</td></tr>"
-
-        table += "</table>"
-
-        prompt = (
-            f"Analyze the following technical indicators for {stock_name}:\n"
-            f"- RSI: {rsi if rsi else 'Not available'}\n"
-            f"- MACD: {macd if macd else 'Not available'}\n"
-            f"- SMA: {sma if sma else 'Not available'}\n"
-            f"- EMA: {ema if ema else 'Not available'}\n"
-            f"- Bollinger Bands (High: {bb_high if bb_high else 'Not available'}, Low: {bb_low if bb_low else 'Not available'})\n"
-            "Provide a brief summary of the stock's technical outlook."
-        )
-        insights = self.get_llm_analysis(prompt)
-
-        return table, insights
-
-    def get_stock_comparison(self, stock_data_1: Dict, stock_data_2: Dict, stock_name_1: str, stock_name_2: str, date: Optional[str] = None) -> Tuple[str, str]:
-        """Compare stock indicators for two companies."""
-        if not stock_data_1 or "data" not in stock_data_1 or not stock_data_1["data"]:
-            return f"No data available for {stock_name_1}.", ""
-        if not stock_data_2 or "data" not in stock_data_2 or not stock_data_2["data"]:
-            return f"No data available for {stock_name_2}.", ""
-
-        if date:
+                vector_db = self.determine_relevant_db(question)
+            except Exception as e:
+                print(f"Database selection error: {e}")
+                vector_db = self.pdf_vector_db  # Fallback to general DB
+            
+            # Get relevant documents
             try:
-                datetime.strptime(date, "%Y-%m-%d")
-            except ValueError:
-                return f"Invalid date format: {date}. Please use YYYY-MM-DD.", ""
+                similarity_search = vector_db.similarity_search_with_score(question, k=top_n_values)
+                context = [doc.page_content for doc, score in similarity_search if score < 1.5]
+                number_of_contexts = len(context)
 
-        data_1 = {entry['date']: entry for entry in stock_data_1.get('data', [])}
-        data_2 = {entry['date']: entry for entry in stock_data_2.get('data', [])}
+                if number_of_contexts == 0:
+                    yield "data: I couldn't find relevant information to answer your question. Please try rephrasing or ask about NEPSE, stocks, brokers, or related topics.\n\n"
+                    yield "data: END\n\n"
+                    return
 
-        if not date:
-            common_dates = sorted(set(data_1.keys()) & set(data_2.keys()))
-            if not common_dates:
-                return f"No overlapping date records found between {stock_name_1} and {stock_name_2}.", ""
-            date = common_dates[-1]
+                if number_of_contexts > 1:
+                    context = self.rerank_contexts(question, context)
 
-        entry_1 = data_1.get(date)
-        entry_2 = data_2.get(date)
-
-        if not entry_1 or not entry_2:
-            missing = []
-            if not entry_1:
-                missing.append(stock_name_1)
-            if not entry_2:
-                missing.append(stock_name_2)
-            return f"Data for {', '.join(missing)} is not available on {date}.", ""
-
-        def safe_get(val, precision=2):
-            return f"{val:.{precision}f}" if isinstance(val, (int, float)) else "N/A"
-
-        p1, i1 = entry_1.get("price", {}), entry_1.get("indicators", {})
-        p2, i2 = entry_2.get("price", {}), entry_2.get("indicators", {})
-
-        table = f"""
-        <h3>Stock Comparison on {date}</h3>
-        <table border='1' style='border-collapse:collapse;'>
-            <tr><th>Metric</th><th>{stock_name_1}</th><th>{stock_name_2}</th></tr>
-            <tr><td>Closing Price</td><td>{safe_get(p1.get('close'))}</td><td>{safe_get(p2.get('close'))}</td></tr>
-            <tr><td>Price Change</td><td>{safe_get(p1.get('diff'))}</td><td>{safe_get(p2.get('diff'))}</td></tr>
-            <tr><td>RSI</td><td>{safe_get(i1.get('RSI'))}</td><td>{safe_get(i2.get('RSI'))}</td></tr>
-            <tr><td>MACD</td><td>{safe_get(i1.get('MACD'))}</td><td>{safe_get(i2.get('MACD'))}</td></tr>
-            <tr><td>SMA</td><td>{safe_get(i1.get('SMA'))}</td><td>{safe_get(i2.get('SMA'))}</td></tr>
-            <tr><td>EMA</td><td>{safe_get(i1.get('EMA'))}</td><td>{safe_get(i2.get('EMA'))}</td></tr>
-            <tr><td>Volatility (BB Width)</td>
-                <td>{safe_get(i1.get('BB_High') - i1.get('BB_Low')) if i1.get('BB_High') and i1.get('BB_Low') else 'N/A'}</td>
-                <td>{safe_get(i2.get('BB_High') - i2.get('BB_Low')) if i2.get('BB_High') and i2.get('BB_Low') else 'N/A'}</td>
-            </tr>
-        </table>
-        """
-
-        summary = (
-            f"On {date}, {stock_name_1} closed at NPR {safe_get(p1.get('close'))} "
-            f"with RSI {safe_get(i1.get('RSI'))}, and {stock_name_2} closed at NPR {safe_get(p2.get('close'))} "
-            f"with RSI {safe_get(i2.get('RSI'))}. This suggests comparative momentum and technical positioning. "
-            f"Always consider long-term context and sector factors when making decisions."
-        )
-
-        return table, summary
-
-    def get_monthly_performance_summary(self, stock_data: Dict, stock_name: str, month: str) -> Tuple[str, str]:
-        """Generate a monthly performance summary for a stock."""
-        if not stock_data or "data" not in stock_data or not stock_data["data"]:
-            return f"No data available for {stock_name}.", ""
-
-        try:
-            datetime.strptime(month, "%Y-%m")
-        except ValueError:
-            return f"Invalid month format: {month}. Please use YYYY-MM format.", ""
-
-        monthly_entries = [entry for entry in stock_data["data"] if entry["date"].startswith(month)]
-        if not monthly_entries:
-            return f"No records found for {stock_name} in {month}.", ""
-
-        monthly_entries.sort(key=lambda x: x["date"])
-        first_day = monthly_entries[0]
-        last_day = monthly_entries[-1]
-
-        def safe_avg(entries, key):
-            values = [e.get("indicators", {}).get(key) for e in entries if isinstance(e.get("indicators", {}).get(key), (int, float))]
-            return sum(values) / len(values) if values else None
-
-        def bb_width(entry):
-            bb_high = entry.get("indicators", {}).get("BB_High")
-            bb_low = entry.get("indicators", {}).get("BB_Low")
-            return bb_high - bb_low if isinstance(bb_high, (int, float)) and isinstance(bb_low, (int, float)) else None
-
-        open_price = first_day.get("price", {}).get("close")
-        close_price = last_day.get("price", {}).get("close")
-        price_change = close_price - open_price if open_price and close_price else None
-
-        avg_close_price = sum(
-            e.get("price", {}).get("close", 0) for e in monthly_entries if isinstance(e.get("price", {}).get("close"), (int, float))
-        ) / len(monthly_entries)
-
-        avg_rsi = safe_avg(monthly_entries, "RSI")
-        avg_sma = safe_avg(monthly_entries, "SMA")
-        avg_ema = safe_avg(monthly_entries, "EMA")
-        avg_volatility = sum(
-            bb_width(e) for e in monthly_entries if bb_width(e) is not None
-        ) / len([e for e in monthly_entries if bb_width(e) is not None]) if any(bb_width(e) for e in monthly_entries) else None
-
-        def safe_fmt(val, precision=2):
-            return f"{val:.{precision}f}" if isinstance(val, (int, float)) else "N/A"
-
-        table = f"""
-        <h3>{stock_name} Monthly Performance Summary - {month}</h3>
-        <table border='1' style='border-collapse: collapse;'>
-            <tr><th>Metric</th><th>Value</th></tr>
-            <tr><td>Opening Price</td><td>{safe_fmt(open_price)}</td></tr>
-            <tr><td>Closing Price</td><td>{safe_fmt(close_price)}</td></tr>
-            <tr><td>Price Change</td><td>{safe_fmt(price_change)}</td></tr>
-            <tr><td>Average Close Price</td><td>{safe_fmt(avg_close_price)}</td></tr>
-            <tr><td>Average RSI</td><td>{safe_fmt(avg_rsi)}</td></tr>
-            <tr><td>Average SMA</td><td>{safe_fmt(avg_sma)}</td></tr>
-            <tr><td>Average EMA</td><td>{safe_fmt(avg_ema)}</td></tr>
-            <tr><td>Average Volatility (BB Width)</td><td>{safe_fmt(avg_volatility)}</td></tr>
-        </table>
-        """
-
-        summary = (
-            f"In {month}, {stock_name} showed a net price change of NPR {safe_fmt(price_change)} "
-            f"from NPR {safe_fmt(open_price)} to NPR {safe_fmt(close_price)}. "
-            f"Technical indicators like RSI (avg {safe_fmt(avg_rsi)}) and EMA (avg {safe_fmt(avg_ema)}) "
-            f"provide a trend snapshot. Volatility averaged around {safe_fmt(avg_volatility)}. "
-            f"This helps assess risk and momentum for the month."
-        )
-
-        return table, summary
-
-    def get_trend_analysis(self, stock_data: Dict, stock_name: str = "", days: int = 7) -> Tuple[str, str]:
-        if not stock_data or "data" not in stock_data or not isinstance(stock_data["data"], list):
-            return f"No valid stock data available for {stock_name}.", ""
-        entries = stock_data["data"][-days:]
-        if len(entries) < days:
-            return f"Insufficient recent data to analyze trend for {stock_name} (need {days} days, got {len(entries)}).", ""
-        try:
-            closes = [e["price"]["close"] for e in entries if "price" in e and "close" in e["price"]]
-            smas = [e["indicators"].get("SMA") for e in entries if "indicators" in e]
-            emas = [e["indicators"].get("EMA") for e in entries if "indicators" in e]
-            rsis = [e["indicators"].get("RSI") for e in entries if "indicators" in e]
-            macds = [e["indicators"].get("MACD") for e in entries if "indicators" in e]
-            signals = [e["indicators"].get("MACD_Signal") for e in entries if "indicators" in e]
-
-            if not closes or not rsis or not smas or not emas:
-                return f"Missing required data (prices or indicators) for {stock_name}.", ""
-
-            avg_rsi = mean([r for r in rsis if r is not None])
-            avg_macd_diff = mean([(m - s) for m, s in zip(macds, signals) if m is not None and s is not None])
-            price_trend = closes[-1] - closes[0]
-            avg_ema = mean([e for e in emas if e is not None])
-            avg_sma = mean([s for s in smas if s is not None])
-
-            if price_trend > 0 and avg_rsi > 55 and avg_ema > avg_sma and avg_macd_diff > 0:
-                trend = "Uptrend 📈"
-            elif price_trend < 0 and avg_rsi < 45 and avg_ema < avg_sma and avg_macd_diff < 0:
-                trend = "Downtrend 📉"
-            else:
-                trend = "Sideways 🔄"
-
-            html = f"""
-            <h3>{stock_name} Trend Analysis - Last {days} Days</h3>
-            <table border='1' style='border-collapse:collapse;'>
-                <tr><th>Metric</th><th>Value</th></tr>
-                <tr><td>Trend</td><td>{trend}</td></tr>
-                <tr><td>Price Change</td><td>{price_trend:.2f} NPR</td></tr>
-                <tr><td>Avg RSI</td><td>{avg_rsi:.2f}</td></tr>
-                <tr><td>Avg EMA</td><td>{avg_ema:.2f}</td></tr>
-                <tr><td>Avg SMA</td><td>{avg_sma:.2f}</td></tr>
-                <tr><td>Avg MACD - Signal</td><td>{avg_macd_diff:.2f}</td></tr>
-            </table>
-            """
-
-            description = (
-                f"Over the past {days} days, {stock_name} shows a **{trend.lower()}** pattern, "
-                f"with prices changing by {price_trend:.2f} NPR. The average RSI was {avg_rsi:.2f}, "
-                f"suggesting {'bullish' if avg_rsi > 55 else 'bearish' if avg_rsi < 45 else 'neutral'} momentum. "
-                f"Additionally, EMA vs SMA and MACD vs Signal indicate overall technical {trend.lower()}."
-            )
-
-            return html, description
-        except Exception as e:
-            logger.error(f"Error analyzing trend for {stock_name}: {e}")
-            return f"Error analyzing trend for {stock_name}: {str(e)}", ""
-        
-
-    def route_prompt(self, user_input: str) -> Dict:
-        # 1. Language check: Only accept English or Nepali
-        lang = self.detect_language(user_input)
-        if lang not in ["en", "ne"]:
-            return {"function": None, "params": {}, "message": "Only English and Nepali queries are supported."}
-
-        # 2. Translate if Nepali
-        translated = self.perform_translation(user_input, "ne", "en") if lang == "ne" else user_input
-
-        # 3. Extract + fuzzy match tickers
-        extracted_words = re.findall(r"\b[A-Za-z]{2,15}\b", translated)
-        tickers = []
-        for word in extracted_words:
-            if word.upper() in self.VALID_TICKERS:
-                tickers.append(word.upper())
-            else:
-                match = self.fuzzy_match_ticker(word)
-                if match:
-                    tickers.append(match)
-        tickers = list(set(tickers))  # Remove duplicates
-
-        # 4. Extract date & month
-        date_match = re.search(r"\d{4}-\d{2}-\d{2}", translated)
-        date = date_match.group(0) if date_match else None
-        month_match = re.search(r"\d{4}-\d{2}", translated)
-        month = month_match.group(0) if month_match else None
-
-        logger.info(f"Processed input: '{translated}' | Valid tickers: {tickers}")
-
-        # 5. Keyword-Based Routing
-        input_lower = translated.lower()
-        for rule in self.routing_rules:
-            if all(kw in input_lower for kw in rule["keywords"]) and len(tickers) >= rule["min_tickers"]:
-                params = {"symbols": tickers[:2]} if "symbols" in rule["function"] else {"stock_name": tickers[0]}
-                if "date" in rule["function"]:
-                    params["date"] = date
-                if "month" in rule["function"]:
-                    params["month"] = month
-                if "end_date" in rule["function"]:
-                    params["end_date"] = date
-                return {"function": rule["function"], "params": params}
-
-        # 6. Semantic fallback: classify with LLM intent
-        intent = self.classify_intent_with_llm(translated)
-        fallback_map = {
-            "trend": "get_trend_analysis",
-            "comparison": "get_stock_comparison",
-            "volatility": "get_volatility_analysis",
-            "fundamentals": "format_fundamental_table",
-            "technical": "get_technical_indicator_summary",
-            "daily": "get_daily_summary"
-        }
-        if intent in fallback_map and tickers:
-            func = fallback_map[intent]
-            return {"function": func, "params": {"stock_name": tickers[0], "date": date, "month": month, "end_date": date}}
-
-        return {"function": None, "params": {}, "message": "Unrecognized query."}
-
-    # Helper for error messages
-    def error(self, message: str) -> Dict:
-        return {"function": None, "params": {}, "message": f"{message}"}
-
-
-
-    def load_fundamental_data(self) -> List[Dict]:
-        """Load fundamental data from CSV file."""
-        try:
-            base_path = Path(__file__).parent.parent
-            csv_path = base_path / "data" / "initial data" / "fundamental_data.csv"
-            df = pd.read_csv(csv_path)
-            df["Company Symbol"] = df["Company Symbol"].str.strip().str.upper()
-            logger.info(f"Loaded fundamental data symbols: {df['Company Symbol'].tolist()}")
-            return df.to_dict(orient="records")
-        except Exception as e:
-            logger.error(f"Error loading fundamental data: {e}")
-            return []
-        
-        
-    def load_stock_data(self, symbol: str) -> Dict:
-        """Load stock price/indicator data from JSON files."""
-        try:
-            base_path = Path(__file__).parent.parent
-            data_dir = base_path / "data" / "stock_data"
-            file_path = data_dir / f"{symbol.upper()}.json"
+                context = ". ".join(context)
+            except Exception as e:
+                print(f"Context retrieval error: {e}")
+                yield "data: I encountered an error retrieving the necessary information. Please try again later.\n\n"
+                yield "data: END\n\n"
+                return
             
-            if not file_path.exists():
-                logger.warning(f"No stock data found for {symbol}")
-                return {}
+            # Determine database type and create appropriate prompt
+            db_type = "general"
+            if vector_db == self.broker_vector_db:
+                db_type = "broker"
+            elif vector_db == self.fundamental_vector_db:
+                db_type = "fundamental"
+            elif vector_db == self.company_vector_db:
+                db_type = "company"
             
-            with open(file_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except Exception as e:
-            logger.error(f"Error loading stock data for {symbol}: {e}")
-            return {}
-        
-    def get_llm_analysis(self, prompt: str) -> str:
-        """Generate insights using the TinyLlama model."""
-        try:
-            formatted_prompt = f"""<|system|>
-You are a financial assistant. Summarize this input into 3–5 lines with a clear explanation. Highlight momentum, volatility, trend, or valuation. Avoid repeating the input.</s>
-<|user|>
-{prompt}</s>
-<|assistant|>"""
+            # Enhanced database-specific prompts
+            prompt_templates = {
+                "broker": '''
+                You are NEPSE-GPT, an expert on Nepalese stock brokers. Answer the question using ONLY the information provided in the context below.
+                
+                CONTEXT INFORMATION:
+                {context}
+                
+                QUESTION: {question}
+                
+                BROKER DATABASE STRUCTURE:
+                The broker information typically contains these fields in order:
+                - ID Number
+                - License Number (sometimes with _RWS suffix for branch offices)
+                - Company Name 
+                - Address (City, District)
+                - Phone (may be empty)
+                - Website URL
+                - TMS (Trading Management System) URL
+                
+                INSTRUCTIONS:
+                1. If answering about a specific broker, include their name, license number, address, and website.
+                2. For broker branches, note they share the same license number but with "_RWS" suffix.
+                3. When mentioning locations, be precise about which city each broker office is located in.
+                4. If asked about brokers in a specific location (e.g., "brokers in Kathmandu"), count only the offices in that exact location.
+                5. Count each broker office separately (main office and branches are counted individually).
+                6. Understand that the same broker company may have multiple locations (e.g., Agrawal Securities has offices in Dillibazar, Biratnagar, and Janakpur).
+                7. If the question asks about total brokers in Nepal, count each unique license number (without _RWS) only once.
+                8. If specific information is not in the context, state "Based on the available information, I cannot provide details about [specific item]."
+                9. Keep your answer concise (3-5 sentences) but include all relevant facts from the context.
+                10. Do not make up or infer information not present in the context.
+                
+                ANSWER:
+                ''',
+                
+                "fundamental": '''
+                You are NEPSE-GPT, a financial analyst specialized in Nepalese stock fundamentals. Analyze the question using ONLY the provided context which contains the LATEST fundamental data (typically last 1-2 quarters). When historical context is missing, clearly state this limitation.
 
-            inputs = self.tokenizer([formatted_prompt], return_tensors="pt").to(self.device)
-            generation_kwargs = {
-                **inputs,
-                "streamer": self.streamer,
-                "max_new_tokens": 512,
-                "do_sample": True,
-                "temperature": self.temperature,
-                "top_p": 0.95,
-                "top_k": 40,
-                "repetition_penalty": 1.1,
-                "pad_token_id": self.tokenizer.pad_token_id
+                CONTEXT INFORMATION:
+                {context}
+
+                QUESTION: {question}
+
+                RESPONSE PROTOCOL:
+                1. DATA PRESENTATION:
+                - Lead with the most recent metrics first
+                - Format: "[Metric]: [Value] [Fiscal Year/Qtr] (e.g., EPS: Rs. 16.03 FY2081 Q2)"
+                - Highlight significant changes with ▲/▼ arrows when comparable data exists
+                - Negative values: "WARNING: Negative EPS of Rs. -2.45 (FY2081 Q3)"
+
+                2. HISTORICAL CONTEXT HANDLING:
+                - If question asks for historical trends: "The available data only covers [time period]. For complete historical analysis, please consult annual reports."
+                - For missing year-end data: "FY2083 annual figures not yet available. Latest data is from Q3."
+
+                3. FINANCIAL BENCHMARKING:
+                EPS Assessment (Latest Available):
+                - > Rs. 25: "Strong earnings growth"
+                - Rs. 15-25: "Healthy profitability"
+                - Rs. 5-15: "Moderate performance"
+                - < Rs. 5: "Concerning earnings quality" 
+                
+                P/E Evaluation:
+                - Sector Average: ~22 (compare accordingly)
+                - < 15: "Undervalued relative to sector"
+                - 15-25: "Fairly valued"
+                - > 25: "Premium valuation"
+
+                4. DIVIDEND ANALYSIS:
+                - Current Yield: "[X]% (based on last market price)"
+                - Historical Pattern: "Consistent payer" or "Volatile history" if data permits
+
+                5. RISK INDICATORS:
+                - Debt Warning: "High PBV of 4.2 suggests overvaluation"
+                - Negative Metrics: "CAUTION: Quarterly EPS decline from Rs. 15 → Rs. 8"
+
+                6. TEMPLATE RESPONSE:
+                "[Company] Fundamentals (Latest Available):
+                - EPS: Rs. [X] ([Fiscal/Qtr]) ▲[Y]% from previous
+                - P/E: [X] vs sector average [Y]
+                - Book Value: Rs. [X] (PBV: [Y])
+                - Dividend: [X]% for [Fiscal Year]
+                - Market Cap: Rs. [X] Cr
+
+                Analysis: [Concise interpretation based on above metrics]. 
+                Note: Complete historical trends not available in this dataset."
+
+                ANSWER:
+                ''',
+                "company": '''
+                You are NEPSE-DataAnalyst, providing strictly fact-based analysis of Nepalese stock market data from 2008-2025.
+
+                CONTEXT INFORMATION:
+                {context}
+
+                QUESTION: {question}
+
+                RESPONSE PROTOCOL:
+
+                1. DATE AVAILABLE IN DATA:
+                """
+                [Company] on [Date]:
+                - Closing: Rs. [close] (Range: Rs. [min]-Rs. [max])
+                - Change: [diff] Rs. ([% change]%)
+                - Volume: [tradedShares] shares (Rs. [amount])
+                Technical Indicators:
+                • SMA: [SMA] ([Above/Below] price)
+                • RSI: [RSI] ([Overbought/Oversold/Neutral])
+                • Bollinger: [Position relative to bands]
+                """
+
+                2. DATE MISSING FROM DATA:
+                """
+                No trading record found for [date]. Possible scenarios:
+                
+                A) Market Holiday:
+                - Common during Dashain/Tihar (Sep-Nov)
+                - Saturday/Sunday closures
+                - Other public holidays
+                
+                B) Non-Trading Day for this Stock:
+                - Listing after [date] (first trade: [first_available_date])
+                - Trading suspension
+                
+                Nearest Available Data:
+                - Previous: [last_date] ([last_close] Rs.)
+                - Next: [next_date] ([next_close] Rs.)
+                """
+
+                3. TECHNICAL INTERPRETATION:
+                """
+                Technical Context:
+                - Trend: [Up/Down/Sideways] since [reference_date]
+                - Momentum: [RSI analysis]
+                - Key Levels: 
+                    Support: Rs. [level]
+                    Resistance: Rs. [level]
+                - Volume Trend: [Increasing/Decreasing]
+                """
+
+                4. EXAMPLE RESPONSES:
+
+                A) For existing date:
+                """
+                NABIL on 2019-03-07:
+                - Closing: Rs. 566 (Range: Rs. 555-583)
+                - Change: +10 Rs. (+1.8%)
+                - Volume: 1,810 shares (Rs. 1,015,090)
+                
+                Technicals:
+                • SMA: 464.2 (Price trading above)
+                • RSI: 81.88 (Overbought)
+                • Bollinger: Near upper band (709.94)
+                
+                Analysis:
+                - Strong uptrend but overbought
+                - Next resistance at Rs. 583
+                - Volume decreased 27% from previous day
+                """
+
+                B) For missing date:
+                """
+                No data for 2019-05-29. Possible holiday.
+                
+                Nearest Sessions:
+                - 2019-05-28: Closed at Rs. 890 (RSI: 68)
+                - 2019-05-30: Opened at Rs. 900 (+1.2%)
+                
+                Technical Context:
+                - Price was in uptrend before gap
+                - Moderate RSI suggests room for movement
+                - Watch Rs. 900 as new support level
+                """
+
+                RULES:
+                1. NEVER invent holiday names
+                2. Only reference ACTUAL available dates
+                3. For pre-listing queries: "Company listed on [date]"
+                4. Always show nearest available data points
+                5. Technical analysis only on existing data
+
+                ANSWER:
+                ''',
+                "general": '''
+                You are NEPSE-GPT, an expert on Nepalese stock market rules, procedures, and investor education. Answer the question using ONLY the information provided in the context below.
+
+                CONTEXT INFORMATION:
+                {context}
+
+                QUESTION: {question}
+
+                PDF DATABASE STRUCTURE:
+                The documents cover a wide range of topics including:
+                - SEBON rules, guidelines, and regulations (e.g., Public Issue Regulation, Mutual Fund Regulation, Securities Act)
+                - NEPSE operational rules and trading system manuals (e.g., trading hours, circuit breaker rules, listing procedures)
+                - CDSC procedures and investor-related services (e.g., demat process, IPO application process, share allotment)
+                - Educational content and FAQs (e.g., "What is an IPO?", "Role of a Broker", glossary of stock terms)
+                - Government notices, circulars, and updates related to securities and the capital market
+
+                INSTRUCTIONS:
+                1. Keep your answer concise (3–5 sentences), clear, and based ONLY on the provided context.
+                2. Use bullet points or lists only if the question requests a list or step-by-step explanation.
+                3. If the question is about procedures (e.g., IPO process, share transfer), explain them in simple terms.
+                4. If the answer relates to regulatory documents (e.g., SEBON rules), mention the name of the document if it's available.
+                5. DO NOT make up or assume any information that is not present in the context.
+                6. If the context does not contain the requested detail, respond with: "Based on the available information, I cannot provide details about [specific topic]."
+
+                ANSWER:
+                '''
             }
+            
+            # Check for counting queries to use specialized prompt
+            query_lower = question.lower()
+            counting_patterns = ["how many", "count", "total number", "number of", "list all", "show all", "all the", "count of"]
+            is_counting_query = any(pattern in query_lower for pattern in counting_patterns)
+            
+            if is_counting_query:
+                # Add specialized counting prompt that emphasizes accuracy in counting entities
+                counting_prompt = '''
+                You are NEPSE-GPT, tasked with counting or listing items from the Nepalese stock market. Answer the question using ONLY the information provided in the context below.
+                
+                CONTEXT INFORMATION:
+                {context}
+                
+                QUESTION: {question}
+                
+                INSTRUCTIONS:
+                1. Your primary task is to COUNT or LIST items accurately based on the context.
+                2. Explicitly state the total count at the beginning of your answer (e.g., "There are 12 brokers in Kathmandu").
+                3. If the context contains a partial list, clearly state this limitation (e.g., "Based on the available information, I can identify at least 8 companies...").
+                4. For filtered counting queries (e.g., brokers in a specific location), specify both the filter criteria and count.
+                5. If appropriate, briefly list the items being counted (especially for small counts).
+                6. If you cannot determine an exact count from the context, provide the best estimate based solely on the information provided and explain your uncertainty.
+                7. Do not make up or infer information not present in the context.
+                8. Keep your answer concise but ensure counting accuracy is the top priority.
+                
+                ANSWER:
+                '''
+                
+                # Use counting prompt regardless of DB type for counting queries
+                prompt = counting_prompt.format(question=question, context=context)
+            else:
+                # Select the appropriate standard prompt template
+                prompt_template = prompt_templates.get(db_type, prompt_templates["general"])
+                prompt = prompt_template.format(question=question, context=context)
 
-            thread = Thread(target=self.model.generate, kwargs=generation_kwargs)
-            thread.start()
+            # Generate response with improved error handling
+            try:
+                inputs = self.tokenizer([prompt], return_tensors="pt").to("cuda")
+                
+                # Model generation parameters
+                generation_kwargs = dict(
+                    inputs, 
+                    streamer=self.streamer, 
+                    max_new_tokens=2000,       # Maximum number of tokens to generate
+                    do_sample=True,            # Enable sampling
+                    temperature=0.3,           # Lower temperature for more factual/deterministic responses
+                    top_p=0.95,                # Nucleus sampling parameter
+                    top_k=40,                  # Top-k sampling parameter
+                    repetition_penalty=1.1,    # Discourage repetition
+                    pad_token_id=50256         # Padding token ID
+                )
+                
+                thread = Thread(target=self.model.generate, kwargs=generation_kwargs)
+                thread.start()
 
-            response = ""
-            timeout = 30
-            start = time.time()
-            while thread.is_alive() and (time.time() - start) < timeout:
-                for token in self.streamer:
-                    if token.strip() not in ["</s>", "<|system|>", "<|user|>", "<|assistant|>"]:
-                        response += token
-                time.sleep(0.1)
+                if is_original_language_nepali:
+                    # Handle Nepali translation for streaming
+                    sentence = ""
+                    for token in self.streamer:
+                        if token != "</s>":
+                            sentence += token
+                            if "." in token:
+                                try:
+                                    translated = self.translate_using_google_api(sentence, "en", "ne")[0]
+                                    translated = re.sub(r'</?s>', '', translated)
+                                    yield f"data: {translated}\n\n"
+                                    sentence = ""
+                                except Exception as e:
+                                    print(f"Translation error during streaming: {e}")
+                                    yield f"data: {sentence}\n\n"  # Fallback to English
+                                    sentence = ""
+                else:
+                    # Stream English response directly
+                    for token in self.streamer:
+                        yield f"data: {token}\n\n"
 
-            if thread.is_alive():
                 thread.join()
-            return response.strip()
+                yield "data: END\n\n"
+                
+            except Exception as e:
+                print(f"Response generation error: {e}")
+                yield "data: I encountered a technical issue while generating a response. Please try again later.\n\n"
+                yield "data: END\n\n"
+                return
+                
         except Exception as e:
-            logger.error(f"Error generating LLM insight: {e}")
-            return "⚠️ AI Insight could not be generated."
+            # Global error handler
+            print(f"Unexpected error in make_predictions: {e}")
+            yield "data: Sorry, an unexpected error occurred. Please try again later.\n\n"
+            yield "data: END\n\n"
+            return
+        
+if __name__ == "__main__":
+    # Instantiate the pipeline
+    pipeline = PredictionPipeline()
+    
+    # Load everything
+    pipeline.load_model_and_tokenizers()
+    pipeline.load_sentence_transformer()
+    pipeline.load_reranking_model()
+    pipeline.load_embeddings()
 
-    def make_predictions(self, question: str) -> str:
-        try:
-            route = self.route_prompt(question)
-            func_name = route["function"]
-            params = route["params"]
+    # ✅ Multiple test queries mapped to intended vector stores
+    test_queries = {
+        "broker_vector_db": "Which brokers are located in Kathmandu?",
+        "fundamental_vector_db": "What is the EPS of NABIL bank?",
+        "company_vector_db": "Show me the stock price history of NLIC in 2020.",
+        "pdf_vector_db": "What are the trading rules in NEPSE?"
+    }
 
-            if "stock_name" in params:
-                params["stock_data"] = self.load_stock_data(params["stock_name"])
-            if "stock_name_1" in params:
-                params["stock_data_1"] = self.load_stock_data(params["stock_name_1"])
-            if "stock_name_2" in params:
-                params["stock_data_2"] = self.load_stock_data(params["stock_name_2"])
-
-            if func_name == "get_daily_summary":
-                return self.get_daily_summary(**params)
-            elif func_name == "weekly_summary":
-                weekly_data = params["stock_data"].get("data", [])[-7:]  # Last 7 days
-                if not weekly_data:
-                    return f"No weekly data available for {params['stock_name']}.", ""
-                table, insights = self.weekly_summary(weekly_data, params["stock_name"])
-                return table + "<br><br>" + insights
-            elif func_name == "get_volatility_analysis":
-                table, insights = self.get_volatility_analysis(**params)
-                return table + "<br><br>" + insights
-            elif func_name == "get_monthly_performance_summary":
-                table, summary = self.get_monthly_performance_summary(**params)
-                return table + "<br><br>" + summary
-            elif func_name == "get_technical_indicator_summary":
-                table, insights = self.get_technical_indicator_summary(**params)
-                return table + "<br><br>" + insights
-            elif func_name == "get_trend_analysis":
-                table, description = self.get_trend_analysis(**params)
-                return table + "<br><br>" + description
-            elif func_name == "get_stock_comparison":
-                table, summary = self.get_stock_comparison(**params)
-                return table + "<br><br>" + summary
-            elif func_name == "format_fundamental_comparison":
-                symbols = params.get("symbols", [])
-                fundamentals = self.load_fundamental_data()
-                filtered = [f for f in fundamentals if f.get("Company Symbol") in symbols]
-                if len(filtered) < 2:
-                    return "❌ One or both companies not found in the fundamental data."
-                table, summary = self.format_fundamental_comparison(filtered)
-                return table + "<br><br>" + summary
-            elif func_name == "format_fundamental_table":
-                symbols = params.get("symbols", [])
-                fundamentals = self.load_fundamental_data()
-                filtered = [f for f in fundamentals if f.get("Company Symbol") in symbols]
-                if not filtered:
-                    return "❌ Company not found in the fundamental data."
-                table, summary = self.format_fundamental_table(filtered)
-                return table + "<br><br>" + summary
-            elif func_name is None:
-                return route["message"]
-
-            return self.get_llm_analysis(question)
-        except Exception as e:
-            logger.error(f"Error in make_predictions: {e}")
-            return f"⚠️ An error occurred: {e}"
+    # ✅ Loop through and test each
+    for db_name, test_question in test_queries.items():
+        print(f"\n=== Testing Query for {db_name} ===")
+        print(f"Test Question: {test_question}\n")
+        
+        response = ""
+        for output in pipeline.make_predictions(test_question):
+            if output.startswith("data: "):
+                content = output.replace("data: ", "").strip()
+                if content == "END":
+                    break
+                response += content + " "
+        
+        print("Final Answer:\n")
+        print(response.strip())
+        print("\n" + "="*80 + "\n")

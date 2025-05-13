@@ -7,6 +7,7 @@ starlette==0.41.0
 # -------------------------------
 # Pydantic for data validation
 pydantic==2.11.1
+pydantic[email]==2.11.1
 langchain_huggingface==0.1.2
 # -------------------------------
 # Authentication and JWT
@@ -72,3 +73,4 @@ regex==2024.11.6
 # -------------------------------
 # LangChain CLI (keep separate if installing locally)
 langchain-cli
+langchain_huggingface

@@ -26,6 +26,10 @@ https://github.com/mikeboers/PyAV#installation for instructions on how to
 install PyAV on your system.
 """
         )
+    try:
+        FFmpegError = av.FFmpegError  # from av 14 https://github.com/PyAV-Org/PyAV/blob/main/CHANGELOG.rst
+    except AttributeError:
+        FFmpegError = av.AVError
 except ImportError:
     av = ImportError(
         """\
@@ -62,7 +66,12 @@ def write_video(
     audio_options: Optional[Dict[str, Any]] = None,
 ) -> None:
     """
-    Writes a 4d tensor in [T, H, W, C] format in a video file
+    Writes a 4d tensor in [T, H, W, C] format in a video file.
+
+    This function relies on PyAV (therefore, ultimately FFmpeg) to encode
+    videos, you can get more fine-grained control by referring to the other
+    options at your disposal within `the FFMpeg wiki
+    <http://trac.ffmpeg.org/wiki#Encoding>`_.
 
     .. warning::
 
@@ -78,12 +87,25 @@ def write_video(
             as a uint8 tensor in [T, H, W, C] format
         fps (Number): video frames per second
         video_codec (str): the name of the video codec, i.e. "libx264", "h264", etc.
-        options (Dict): dictionary containing options to be passed into the PyAV video stream
+        options (Dict): dictionary containing options to be passed into the PyAV video stream.
+            The list of options is codec-dependent and can all
+            be found from `the FFMpeg wiki <http://trac.ffmpeg.org/wiki#Encoding>`_.
         audio_array (Tensor[C, N]): tensor containing the audio, where C is the number of channels
             and N is the number of samples
         audio_fps (Number): audio sample rate, typically 44100 or 48000
         audio_codec (str): the name of the audio codec, i.e. "mp3", "aac", etc.
-        audio_options (Dict): dictionary containing options to be passed into the PyAV audio stream
+        audio_options (Dict): dictionary containing options to be passed into the PyAV audio stream.
+            The list of options is codec-dependent and can all
+            be found from `the FFMpeg wiki <http://trac.ffmpeg.org/wiki#Encoding>`_.
+
+    Examples::
+        >>> # Creating libx264 video with CRF 17, for visually lossless footage:
+        >>>
+        >>> from torchvision.io import write_video
+        >>> # 1000 frames of 100x100, 3-channel image.
+        >>> vid = torch.randn(1000, 100, 100, 3, dtype = torch.uint8)
+        >>> write_video("video.mp4", options = {"crf": "17"})
+
     """
     if not torch.jit.is_scripting() and not torch.jit.is_tracing():
         _log_api_usage_once(write_video)
@@ -137,7 +159,13 @@ def write_video(
 
         for img in video_array:
             frame = av.VideoFrame.from_ndarray(img, format="rgb24")
-            frame.pict_type = "NONE"
+            try:
+                frame.pict_type = "NONE"
+            except TypeError:
+                from av.video.frame import PictureType  # noqa
+
+                frame.pict_type = PictureType.NONE
+
             for packet in stream.encode(frame):
                 container.mux(packet)
 
@@ -197,7 +225,7 @@ def _read_from_stream(
     try:
         # TODO check if stream needs to always be the video stream here or not
         container.seek(seek_offset, any_frame=False, backward=True, stream=stream)
-    except av.AVError:
+    except FFmpegError:
         # TODO add some warnings in this case
         # print("Corrupted file?", container.name)
         return []
@@ -210,7 +238,7 @@ def _read_from_stream(
                     buffer_count += 1
                     continue
                 break
-    except av.AVError:
+    except FFmpegError:
         # TODO add a warning
         pass
     # ensure that the results are sorted wrt the pts
@@ -332,7 +360,7 @@ def read_video(
                     )
                     info["audio_fps"] = container.streams.audio[0].rate
 
-        except av.AVError:
+        except FFmpegError:
             # TODO raise a warning?
             pass
 
@@ -423,10 +451,10 @@ def read_video_timestamps(filename: str, pts_unit: str = "pts") -> Tuple[List[in
                 video_time_base = video_stream.time_base
                 try:
                     pts = _decode_video_timestamps(container)
-                except av.AVError:
+                except FFmpegError:
                     warnings.warn(f"Failed decoding frames for file {filename}")
                 video_fps = float(video_stream.average_rate)
-    except av.AVError as e:
+    except FFmpegError as e:
         msg = f"Failed to open container for {filename}; Caught error: {e}"
         warnings.warn(msg, RuntimeWarning)
 
