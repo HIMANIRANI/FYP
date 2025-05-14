@@ -1,7 +1,6 @@
 // src/premium.jsx
 import React from "react";
 import { useNavigate } from "react-router-dom";
-import logo from "../assets/money.svg";
 
 const Premium = () => {
   const navigate = useNavigate();
@@ -13,24 +12,6 @@ const Premium = () => {
 
   return (
     <div className="flex flex-col items-center p-4 bg-gray-50 min-h-screen">
-      {/* Header */}
-      <div className="flex justify-between items-center w-full px-6">
-        {/* Logo and Title */}
-        <div className="flex items-center">
-          <img src={logo} alt="Nepse Navigator Logo" className="w-8 h-8 mr-2" />
-          <h1 className="text-lg font-bold text-customBlue">NEPSE-Navigator</h1>
-        </div>
-        {/* Profile */}
-        <div className="flex items-center space-x-3">
-          <img
-            src="/profile-placeholder.png"
-            alt="Profile"
-            className="w-10 h-10 rounded-free border border-gray-300"
-          />
-          <span className="text-customBlue font-medium">Your Profile</span>
-        </div>
-      </div>
-
       {/* Title */}
       <h1 className="text-4xl font-bold text-center mt-10 mb-6 font-inter text-customBlue">
         Manage your Plan
@@ -57,22 +38,29 @@ const Premium = () => {
         </div>
 
         {/* Premium Plan */}
-        <div className="w-[260px] h-[360px] border-2 border-customBlue rounded-2xl p-4 flex flex-col items-center">
+        <div className="w-[260px] h-[360px] border-2 border-customBlue rounded-2xl p-4 flex flex-col items-center relative overflow-hidden">
+          {/* Popular Badge */}
+          <div className="absolute top-4 right-4">
+            <span className="bg-yellow-400 text-customBlue px-3 py-1 rounded-full text-sm font-semibold">
+              Popular
+            </span>
+          </div>
+
           <h2 className="text-3xl font-aboreto mb-2 text-customBlue">PREMIUM</h2>
-          <p className="text-xl font-aboreto mb-4 text-customBlue">1000RS/month</p>
-          <p className="text-customBlue font-abel text-center mb-4">
-            Unlock the Future of Trading: Upgrade to Premium on Nepse Navigator Now
-          </p>
+          <p className="text-xl font-aboreto mb-4 text-customBlue">500RS/month</p>
           <ul className="text-customBlue font-abel space-y-2">
-            <li>• Fundamental Analysis</li>
+            <li>• All Free Features</li>
+            <li>• Stock Price Prediction</li>
+            <li>• Portfolio Management</li>
+            <li>• Stock Watchlist</li>
             <li>• Technical Analysis</li>
-            <li>• Stock Comparison</li>
+            <li>• Fundamental Analysis</li>
           </ul>
           <button
-            className="mt-4 bg-customBlue text-white py-2 px-6 rounded-lg font-semibold hover:bg-blue-700"
             onClick={handleUpgrade}
+            className="mt-4 bg-customBlue text-white py-2 px-6 rounded-lg font-semibold hover:bg-blue-700 transition-colors"
           >
-            Upgrade to Premium
+            Upgrade Now
           </button>
         </div>
       </div>

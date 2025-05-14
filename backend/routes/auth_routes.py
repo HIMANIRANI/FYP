@@ -1,4 +1,5 @@
 import os
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import OAuth2PasswordBearer
@@ -12,20 +13,24 @@ from ..models.user_model import User
 from ..services.auth_services import (create_access_token, hash_password,
                                       verify_password, verify_token)
 
+# Initialize logging
+logger = logging.getLogger(__name__)
+
 # Initialize the FastAPI router
 router = APIRouter()
 
 # Initialize the MongoDB client and define the database and collection
-client = AsyncIOMotorClient(settings.MONGODB_URI)
-db = client.userdata  # Database for user-related data
-collection_name = db["users"]  # Collection to store user information
+try:
+    client = AsyncIOMotorClient(settings.MONGODB_URI)
+    db = client.userdata  # Database for user-related data
+    collection_name = db["users"]  # Collection to store user information
+    logger.info("Successfully connected to MongoDB")
+except Exception as e:
+    logger.error(f"Failed to connect to MongoDB: {str(e)}")
+    raise
 
 # Define the OAuth2 password bearer token scheme
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
-
-IMAGEDIR = "profile_pictures/"
-os.makedirs(IMAGEDIR, exist_ok=True)  # Ensure the directory exists
-
 
 @router.post("/register")
 async def register_user(user: User):
@@ -34,28 +39,39 @@ async def register_user(user: User):
     - Checks if passwords match
     - Verifies if the email is already in use
     - Hashes the password and stores user data in MongoDB
-    - Assigns a default profile image
     """
-    if user.password != user.confirmPassword:
-        raise HTTPException(status_code=400, detail="Passwords do not match")
+    try:
+        logger.info(f"Attempting to register user with email: {user.email}")
+        
+        if user.password != user.confirmPassword:
+            logger.warning(f"Password mismatch for email: {user.email}")
+            raise HTTPException(status_code=400, detail="Passwords do not match")
+        
+        user_db = await collection_name.find_one({"email": user.email})
+        if user_db:
+            logger.warning(f"User already exists with email: {user.email}")
+            raise HTTPException(status_code=400, detail="User already exists")
+
+        # Hash the password before storing it in the database
+        hashed_password = hash_password(user.password)
+        new_user = {
+            "firstName": user.firstName,
+            "lastName": user.lastName,
+            "email": user.email,
+            "password": hashed_password,  # Store the hashed password
+        }
+
+        # Insert the new user into the database
+        result = await collection_name.insert_one(new_user)
+        logger.info(f"Successfully registered user with email: {user.email}")
+        return {"message": "Account created successfully!", "user_id": str(result.inserted_id)}
     
-    user_db = await collection_name.find_one({"email": user.email})
-    if user_db:
-        raise HTTPException(status_code=400, detail="User already exists")
-
-    # Hash the password before storing it in the database
-    hashed_password = hash_password(user.password)
-    new_user = {
-        "firstName": user.firstName,
-        "lastName": user.lastName,
-        "email": user.email,
-        "password": hashed_password,  # Store the hashed password
-        "profile_image": f"{IMAGEDIR}default.jpg",  # Assign a default profile picture
-    }
-
-    # Insert the new user into the database
-    result = await collection_name.insert_one(new_user)
-    return {"message": "Account created successfully!", "user_id": str(result.inserted_id)}
+    except HTTPException as he:
+        # Re-raise HTTP exceptions
+        raise he
+    except Exception as e:
+        logger.error(f"Error registering user: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
 @router.post("/auth/login", response_model=Token)
@@ -82,7 +98,6 @@ async def login(request: LoginRequest):
         "email": user["email"],
         "firstName": user.get("firstName", ""),
         "lastName": user.get("lastName", ""),
-        "profile_image": user.get("profile_image", ""),
     }
     
     return {
@@ -90,27 +105,6 @@ async def login(request: LoginRequest):
         "token_type": "bearer",
         "user": user_profile
     }
-
-
-@router.get("/protected", response_model=UserInfo)
-async def protected_route(token: str = Depends(oauth2_scheme)):
-    """
-    Protected route that requires authentication.
-    - Extracts and verifies the token
-    - Returns user information if the token is valid
-    """
-    credentials_exception = HTTPException(
-        status_code=401,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-    
-    # Verify the provided access token
-    token_data = verify_token(token, credentials_exception)
-    
-    # Return the decoded token data (e.g., username and expiration time)
-    return {"username": token_data.username, "exp": token_data.exp}
-
 
 @router.post("/auth/google-login", response_model=Token)
 async def google_login(data: dict):
@@ -146,7 +140,6 @@ async def google_login(data: dict):
                 "lastName": last_name,
                 "email": email,
                 "password": None,  # No password since they logged in via Google
-                "profile_image": f"{IMAGEDIR}default.jpg",  # Assign a default profile picture
             }
             await collection_name.insert_one(new_user)
             user = new_user
@@ -159,7 +152,6 @@ async def google_login(data: dict):
             "email": user["email"],
             "firstName": user.get("firstName", ""),
             "lastName": user.get("lastName", ""),
-            "profile_image": user.get("profile_image", ""),
         }
         
         return {
@@ -167,10 +159,8 @@ async def google_login(data: dict):
             "token_type": "bearer",
             "user": user_profile
         }
-
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid Google token")
-
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 @router.get("/api/profile/get")
 async def get_profile(token: str = Depends(oauth2_scheme)):
@@ -198,5 +188,4 @@ async def get_profile(token: str = Depends(oauth2_scheme)):
         "email": user["email"],
         "firstName": user.get("firstName", ""),
         "lastName": user.get("lastName", ""),
-        "profile_image": user.get("profile_image", ""),
     }

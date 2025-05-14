@@ -2,61 +2,10 @@ import axios from "axios";
 import React, { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import logo from "../assets/money.svg";
+import UserProfileMenu from "../components/UserProfileMenu";
 
 // Configure axios defaults
 axios.defaults.baseURL = "http://localhost:8000";
-
-// Add keyframes style
-const tickerAnimation = `
-  @keyframes ticker {
-    0% {
-      transform: translateX(0);
-    }
-    100% {
-      transform: translateX(-50%);
-    }
-  }
-
-  .animate-ticker {
-    animation: ticker 3  00s linear infinite;
-    display: flex;
-    width: fit-content;
-  }
-
-  .ticker-container {
-    overflow: hidden;
-    white-space: nowrap;
-    background: white;
-    border-bottom: 1px solid #e5e7eb;
-  }
-`;
-
-// Stock ticker component
-const StockTicker = ({ symbol, name, price, change }) => {
-  const isPositive = parseFloat(change) >= 0;
-  return (
-    <div className="px-4 py-2 border-r border-gray-200 flex items-center whitespace-nowrap">
-      <span className="font-medium">{symbol}</span>
-      <span className="ml-2">Rs.{price}</span>
-      <span className={`ml-2 ${isPositive ? 'text-green-500' : 'text-red-500'}`}>
-        ({isPositive ? '+' : ''}{change}%)
-      </span>
-    </div>
-  );
-};
-
-// Sidebar navigation item
-const NavItem = ({ icon, label, isActive, to }) => (
-  <Link
-    to={to}
-    className={`flex items-center space-x-3 px-4 py-3 rounded-lg ${
-      isActive ? 'bg-blue-100 text-blue-700' : 'text-gray-700 hover:bg-gray-100'
-    }`}
-  >
-    <span className="text-xl">{icon}</span>
-    <span>{label}</span>
-  </Link>
-);
 
 // Chat message component
 const ChatMessage = ({ sender, message, time, isBot }) => (
@@ -88,83 +37,7 @@ const LandingPage = () => {
   const [loading, setLoading] = useState(false);
   const [ws, setWs] = useState(null);
   const [userData, setUserData] = useState(null);
-  const [stockData, setStockData] = useState([]);
   const navigate = useNavigate();
-
-  // Add style to head
-  useEffect(() => {
-    const style = document.createElement('style');
-    style.textContent = tickerAnimation;
-    document.head.appendChild(style);
-    return () => {
-      document.head.removeChild(style);
-    };
-  }, []);
-
-  // Fetch user data
-  useEffect(() => {
-    const fetchUserData = async () => {
-      const token = localStorage.getItem("access_token");
-      console.log("Token:", token);
-
-      if (!token) {
-        console.log("No token found in localStorage");
-        return;
-      }
-
-      try {
-        console.log("Making API request to /api/profile/get");
-        const response = await axios.get("http://localhost:8000/api/profile/get", {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        });
-        console.log("User data received:", response.data);
-        
-        if (response.data) {
-          setUserData(response.data);
-        } else {
-          console.error("No data received from profile endpoint");
-        }
-      } catch (error) {
-        console.error("Error fetching user data:", error.response || error);
-        if (error.response?.status === 401) {
-          console.log("Unauthorized access, removing token");
-          localStorage.removeItem("access_token");
-          navigate("/login");
-        }
-      }
-    };
-
-    fetchUserData();
-  }, [navigate]);
-
-  // Debug log for userData updates
-  useEffect(() => {
-    console.log("Current userData state:", userData);
-  }, [userData]);
-
-  // Fetch stock data
-  useEffect(() => {
-    const fetchStockData = async () => {
-      try {
-        const response = await axios.get("http://localhost:8000/api/stocks/today");
-        if (response.data && response.data.data) {
-          const formattedData = response.data.data.map(item => ({
-            symbol: `${item.company.code}`,
-            name: item.company.name,
-            price: item.price.close.toString(),
-            change: ((item.price.diff / item.price.prevClose) * 100).toFixed(2)
-          }));
-          setStockData(formattedData);
-        }
-      } catch (error) {
-        console.error("Error fetching stock data:", error);
-      }
-    };
-
-    fetchStockData();
-  }, []);
 
   // Initialize WebSocket connection with reconnection logic
   useEffect(() => {
@@ -207,7 +80,7 @@ const LandingPage = () => {
     return () => {
       websocket.close();
     };
-  }, []); // Empty dependency ensures single initialization, reconnection handled in onclose
+  }, []);
 
   // Auto-scroll to bottom of chat
   useEffect(() => {
@@ -240,76 +113,37 @@ const LandingPage = () => {
     }
   };
 
-  // Handle profile click
-  const handleProfileClick = () => {
-    const token = localStorage.getItem("access_token");
-    if (!token) {
-      navigate("/login", { state: { from: "/landing" } });
-    } else {
-      navigate("/profile");
-    }1
-  };
-
-  // Handle premium upgrade click
   const handlePremiumClick = () => {
     navigate("/premium");
   };
 
   return (
     <div className="h-screen flex flex-col">
-      {/* Top Navigation */}
-      <nav className="bg-white shadow-md p-4 flex justify-between items-center">
-        <div className="flex items-center space-x-2">
-          <img src={logo} alt="NEPSE Navigator" className="" />
-        </div>
-        <div 
-          className="flex items-center cursor-pointer" 
-          onClick={handleProfileClick}
-        >
-          <div className="w-8 h-8 rounded-full bg-gray-200 flex items-center justify-center">
-            {userData?.profile_image ? (
-              <img 
-                src={userData.profile_image} 
-                alt="Profile" 
-                className="w-full h-full rounded-full object-cover"
-                onError={(e) => {
-                  console.log("Profile image load error");
-                  e.target.src = "/api/profile/image/default.jpg";
-                }}
-              />
-            ) : (
-              <span>👤</span>
-            )}
-          </div>
-          <span className="ml-2">
-            {userData ? 
-              (userData.firstName || userData.lastName ? 
-                `${userData.firstName || ''} ${userData.lastName || ''}`.trim() : 
-                'User'
-              ) : 
-              'Guest'
-            }
-          </span>
-        </div>
-      </nav>
-
-      {/* Stock Tickers */}
-      <div className="ticker-container">
-        <div className="animate-ticker">
-          {/* Double the items to create seamless loop */}
-          {[...stockData, ...stockData].map((stock, index) => (
-            <StockTicker key={index} {...stock} />
-          ))}
-        </div>
-      </div>
-
       {/* Main Content */}
       <div className="flex-1 flex">
         {/* Sidebar */}
         <div className="w-64 bg-white border-r p-4">
-          <NavItem icon="🏠" label="Home" isActive={true} to="/landing" />
-          <NavItem icon="📊" label="Portfolio Management" to="/portfolio" />
-          <NavItem icon="📈" label="Stock Watchlist" to="/watchlist" />
+          <Link
+            to="/homepage"
+            className="flex items-center space-x-3 px-4 py-3 rounded-lg text-gray-700 hover:bg-gray-100"
+          >
+            <span className="text-xl">🏠</span>
+            <span>Home</span>
+          </Link>
+          <Link
+            to="/portfolio"
+            className="flex items-center space-x-3 px-4 py-3 rounded-lg text-gray-700 hover:bg-gray-100"
+          >
+            <span className="text-xl">📊</span>
+            <span>Portfolio Management</span>
+          </Link>
+          <Link
+            to="/watchlist"
+            className="flex items-center space-x-3 px-4 py-3 rounded-lg text-gray-700 hover:bg-gray-100"
+          >
+            <span className="text-xl">📈</span>
+            <span>Stock Watchlist</span>
+          </Link>
           <div 
             className="mt-4 p-4 bg-yellow-50 rounded-lg cursor-pointer hover:bg-yellow-100 transition-colors"
             onClick={handlePremiumClick}

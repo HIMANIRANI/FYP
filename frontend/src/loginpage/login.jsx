@@ -34,7 +34,7 @@ const LoginPage = () => {
           password: loginData.password,
         },
         {
-          withCredentials: true, // ✅ Important fix: send cookies/tokens
+          withCredentials: true,
         }
       );
 
@@ -47,7 +47,7 @@ const LoginPage = () => {
           localStorage.setItem("user_profile", JSON.stringify(response.data.user));
         }
 
-        navigate("/landingpage");
+        navigate("/homepage");
       } else {
         console.error("No access token in response:", response.data);
         setError("Login failed - no access token received");
@@ -79,7 +79,7 @@ const LoginPage = () => {
           credential: credentialResponse.credential,
         },
         {
-          withCredentials: true, // ✅ Important fix here too
+          withCredentials: true,
         }
       );
 
@@ -92,7 +92,7 @@ const LoginPage = () => {
           localStorage.setItem("user_profile", JSON.stringify(response.data.user));
         }
 
-        navigate("/landingpage");
+        navigate("/homepage");
       } else {
         console.error("No access token received from Google login");
         setError("Google login failed - no access token received");

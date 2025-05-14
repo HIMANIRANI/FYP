@@ -15,7 +15,6 @@ class User(BaseModel):
     email: EmailStr
     password: str
     confirmPassword: str = Field(exclude=True)
-    profile_image: str = "profile_pictures/default.jpg"  # Default image path
 
     class Config:
         """Configuration for the Pydantic model."""

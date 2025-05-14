@@ -2,6 +2,7 @@ import { GoogleOAuthProvider } from "@react-oauth/google";
 import React from "react";
 import { Route, Routes } from "react-router-dom";
 
+import Layout from "./components/Layout";
 import GetStarted from "./getStarted/getstarted";
 import HomePage from "./homepage/homepage";
 import LandingPage from "./landingpage/landingpage";
@@ -15,23 +16,94 @@ import SignupPage from "./signupPage/signupPage";
 import TermsAndConditions from "./terms/terms";
 import Watchlist from "./watchlist/watchlist";
 
+// Pages that don't need the layout (full-screen pages)
+const fullScreenPages = ['/login', '/signup', '/get-started'];
+
 function App() {
+  const isFullScreenPage = fullScreenPages.includes(window.location.pathname);
+
   return (
     <GoogleOAuthProvider clientId="886481282340-ua5r107135v0lc58kngkgsb0tvvb2kii.apps.googleusercontent.com">
       <Routes>
-        <Route path="/" element={<GetStarted />} />
+        {/* Full-screen pages (without layout) */}
         <Route path="/login" element={<Login />} />
         <Route path="/signup" element={<SignupPage />} />
-        <Route path="/landingpage" element={<LandingPage />} />
-        <Route path="/terms" element={<TermsAndConditions />} />
+        <Route path="/" element={<GetStarted />} />
         <Route path="/get-started" element={<GetStarted />} />
-        <Route path="/profile" element={<Profile />} />
-        <Route path="/premium" element={<Premium />} />
-        <Route path="/payment" element={<PaymentPage />} />
-        <Route path="/failure" element={<FailurePage />} />
-        <Route path="/success" element={<SuccessPage />} />
-        <Route path="/homepage" element={<HomePage />} />
-        <Route path="/watchlist" element={<Watchlist />} />
+
+        {/* Pages with layout */}
+        <Route
+          path="/landingpage"
+          element={
+            <Layout>
+              <LandingPage />
+            </Layout>
+          }
+        />
+        <Route
+          path="/homepage"
+          element={
+            <Layout>
+              <HomePage />
+            </Layout>
+          }
+        />
+        <Route
+          path="/terms"
+          element={
+            <Layout>
+              <TermsAndConditions />
+            </Layout>
+          }
+        />
+        <Route
+          path="/profile"
+          element={
+            <Layout>
+              <Profile />
+            </Layout>
+          }
+        />
+        <Route
+          path="/premium"
+          element={
+            <Layout>
+              <Premium />
+            </Layout>
+          }
+        />
+        <Route
+          path="/payment"
+          element={
+            <Layout>
+              <PaymentPage />
+            </Layout>
+          }
+        />
+        <Route
+          path="/failure"
+          element={
+            <Layout>
+              <FailurePage />
+            </Layout>
+          }
+        />
+        <Route
+          path="/success"
+          element={
+            <Layout>
+              <SuccessPage />
+            </Layout>
+          }
+        />
+        <Route
+          path="/watchlist"
+          element={
+            <Layout>
+              <Watchlist />
+            </Layout>
+          }
+        />
       </Routes>
     </GoogleOAuthProvider>
   );

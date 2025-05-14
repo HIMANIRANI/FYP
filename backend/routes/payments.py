@@ -60,7 +60,7 @@ async def initiate_payment(request: PaymentRequest):
                 "product_code": os.getenv("ESEWA_MERCHANT_CODE"),
                 "product_service_charge": "0",
                 "product_delivery_charge": "0",
-                "success_url": f"{os.getenv('BASE_URL')}/success?method=esewa",
+                "success_url": "http://localhost:5173/success",
                 "failure_url": "http://localhost:5173/failure",
                 "signed_field_names": "total_amount,transaction_uuid,product_code",
             }

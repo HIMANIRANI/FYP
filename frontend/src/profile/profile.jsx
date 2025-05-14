@@ -22,7 +22,6 @@ function Profile() {
   const navigate = useNavigate();
   const location = useLocation();
   const token = localStorage.getItem("access_token");
-  const from = location.state?.from || "/landingpage";
 
   useEffect(() => {
     const fetchProfile = async () => {
@@ -62,10 +61,6 @@ function Profile() {
 
     fetchProfile();
   }, [token, navigate]);
-
-  const handleBackToLanding = () => {
-    navigate(from);
-  };
 
   const handleImageUpload = (e) => {
     const selectedFile = e.target.files?.[0];
@@ -126,10 +121,12 @@ function Profile() {
 
   if (isLoading) {
     return (
-      <div className="flex justify-center items-center h-screen">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-customBlue mx-auto mb-4"></div>
-          <p className="text-gray-600">Loading your profile...</p>
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 min-h-[calc(100vh-4rem)]">
+        <div className="flex justify-center items-center h-full">
+          <div className="text-center">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-customBlue mx-auto mb-4"></div>
+            <p className="text-gray-600">Loading your profile...</p>
+          </div>
         </div>
       </div>
     );
@@ -137,22 +134,18 @@ function Profile() {
 
   if (error) {
     return (
-      <div className="flex justify-center items-center h-screen">
-        <div className="text-center">
-          <p className="text-red-600 mb-4">{error}</p>
-          <div className="space-x-4">
-            <button
-              onClick={() => navigate("/login", { state: { from: "/profile" } })}
-              className="bg-customBlue text-white px-4 py-2 rounded hover:bg-customBlue-light"
-            >
-              Go to Login
-            </button>
-            <button
-              onClick={handleBackToLanding}
-              className="border border-customBlue text-customBlue px-4 py-2 rounded hover:bg-gray-50"
-            >
-              Back to Landing
-            </button>
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 min-h-[calc(100vh-4rem)]">
+        <div className="flex justify-center items-center h-full">
+          <div className="text-center">
+            <p className="text-red-600 mb-4">{error}</p>
+            <div className="space-x-4">
+              <button
+                onClick={() => navigate("/login", { state: { from: "/profile" } })}
+                className="bg-customBlue text-white px-4 py-2 rounded hover:bg-customBlue-light"
+              >
+                Go to Login
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -160,162 +153,165 @@ function Profile() {
   }
 
   if (!userData) {
-    return <div>Loading...</div>; // Show loading state while fetching user data
+    return (
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 min-h-[calc(100vh-4rem)]">
+        <div className="flex justify-center items-center h-full">
+          <div className="text-center">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-customBlue mx-auto mb-4"></div>
+            <p className="text-gray-600">Loading...</p>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   return (
-    <div className="w-full max-w-3xl mx-auto p-6">
-      <div className="flex justify-between items-center mb-8">
-        <h1 className="text-2xl font-semibold text-customBlue">Profile Settings</h1>
-        <button
-          onClick={handleBackToLanding}
-          className="text-customBlue hover:text-customBlue-light"
-        >
-          ← Back to Landing
-        </button>
-      </div>
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 min-h-[calc(100vh-4rem)]">
+      <div className="max-w-3xl mx-auto">
+        <h1 className="text-2xl font-semibold text-customBlue mb-8">Profile Settings</h1>
 
-      <div className="grid gap-8 md:grid-cols-[240px_1fr]">
-        {/* Profile Picture Section */}
-        <div className="space-y-4">
-          <div className="relative">
-            <div className="w-[216px] h-[216px] rounded-full bg-gray-200 relative overflow-hidden">
-              {profileImage ? (
-                <img
-                  src={profileImage}
-                  alt="Profile"
-                  className="w-full h-full object-cover rounded-full"
-                  onError={(e) => {
-                    e.target.src = "/api/profile/image/default.jpg";
-                  }}
-                />
-              ) : (
-                <div className="flex items-center justify-center h-full">
-                  <span className="text-gray-500">No image</span>
-                </div>
-              )}
-              <button
-                className="absolute bottom-2 right-2 w-8 h-8 bg-customBlue rounded-full flex items-center justify-center"
-                onClick={() => document.getElementById("picture-upload")?.click()}
-                disabled={isLoading}
-              >
-                <img src={PlusIcon} alt="Add" className="w-4 h-4" />
-              </button>
-            </div>
-          </div>
-
-          <button
-            className="w-full bg-customBlue hover:bg-customBlue-light text-white py-2 px-4 rounded disabled:opacity-50"
-            onClick={() => document.getElementById("picture-upload")?.click()}
-            disabled={isLoading}
-          >
-            <img src={UploadIcon} alt="Upload" className="inline-block w-4 h-4 mr-2" />
-            Upload Picture
-          </button>
-          <input
-            type="file"
-            id="picture-upload"
-            className="hidden"
-            accept="image/*"
-            onChange={handleImageUpload}
-            disabled={isLoading}
-          />
-
-          <button
-            className="w-full border border-red-500 text-red-500 py-2 px-4 rounded hover:bg-red-50 disabled:opacity-50"
-            onClick={handleDeletePicture}
-            disabled={isLoading}
-          >
-            <img src={TrashIcon} alt="Delete" className="inline-block w-4 h-4 mr-2" />
-            Delete Picture
-          </button>
-        </div>
-
-        {/* Form Section */}
-        <div className="space-y-6">
-          <div className="grid gap-4 md:grid-cols-2">
-            <div className="space-y-2">
-              <label htmlFor="first-name" className="text-customBlue font-medium">
-                First Name
-              </label>
-              <div className="relative">
-                <input
-                  id="first-name"
-                  value={firstName}
-                  onChange={(e) => setFirstName(e.target.value)}
-                  placeholder={userData?.firstName || "Enter first name"}
-                  className="w-full border border-gray-300 rounded px-4 py-2 pr-10 focus:outline-none focus:ring-2 focus:ring-customBlue"
-                  disabled={isLoading}
-                />
-                <button className="absolute right-3 top-1/2 transform -translate-y-1/2">
-                  <img src={PencilIcon} alt="Edit" className="w-4 h-4 text-customBlue" />
-                </button>
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <label htmlFor="last-name" className="text-customBlue font-medium">
-                Last Name
-              </label>
-              <div className="relative">
-                <input
-                  id="last-name"
-                  value={lastName}
-                  onChange={(e) => setLastName(e.target.value)}
-                  placeholder={userData?.lastName || "Enter last name"}
-                  className="w-full border border-gray-300 rounded px-4 py-2 pr-10 focus:outline-none focus:ring-2 focus:ring-customBlue"
-                  disabled={isLoading}
-                />
-                <button className="absolute right-3 top-1/2 transform -translate-y-1/2">
-                  <img src={PencilIcon} alt="Edit" className="w-4 h-4 text-customBlue" />
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <div className="space-y-2">
-            <label htmlFor="email" className="text-customBlue font-medium">
-              Email
-            </label>
+        <div className="grid gap-8 md:grid-cols-[240px_1fr]">
+          {/* Profile Picture Section */}
+          <div className="space-y-4">
             <div className="relative">
+              <div className="w-[216px] h-[216px] rounded-full bg-gray-200 relative overflow-hidden">
+                {profileImage ? (
+                  <img
+                    src={profileImage}
+                    alt="Profile"
+                    className="w-full h-full object-cover rounded-full"
+                    onError={(e) => {
+                      e.target.src = "/api/profile/image/default.jpg";
+                    }}
+                  />
+                ) : (
+                  <div className="flex items-center justify-center h-full">
+                    <span className="text-gray-500">No image</span>
+                  </div>
+                )}
+                <button
+                  className="absolute bottom-2 right-2 w-8 h-8 bg-customBlue rounded-full flex items-center justify-center"
+                  onClick={() => document.getElementById("picture-upload")?.click()}
+                  disabled={isLoading}
+                >
+                  <img src={PlusIcon} alt="Add" className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            <button
+              className="w-full bg-customBlue hover:bg-customBlue-light text-white py-2 px-4 rounded disabled:opacity-50"
+              onClick={() => document.getElementById("picture-upload")?.click()}
+              disabled={isLoading}
+            >
+              <img src={UploadIcon} alt="Upload" className="inline-block w-4 h-4 mr-2" />
+              Upload Picture
+            </button>
+            <input
+              type="file"
+              id="picture-upload"
+              className="hidden"
+              accept="image/*"
+              onChange={handleImageUpload}
+              disabled={isLoading}
+            />
+
+            <button
+              className="w-full border border-red-500 text-red-500 py-2 px-4 rounded hover:bg-red-50 disabled:opacity-50"
+              onClick={handleDeletePicture}
+              disabled={isLoading}
+            >
+              <img src={TrashIcon} alt="Delete" className="inline-block w-4 h-4 mr-2" />
+              Delete Picture
+            </button>
+          </div>
+
+          {/* Form Section */}
+          <div className="space-y-6">
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <label htmlFor="first-name" className="text-customBlue font-medium">
+                  First Name
+                </label>
+                <div className="relative">
+                  <input
+                    id="first-name"
+                    value={firstName}
+                    onChange={(e) => setFirstName(e.target.value)}
+                    placeholder={userData?.firstName || "Enter first name"}
+                    className="w-full border border-gray-300 rounded px-4 py-2 pr-10 focus:outline-none focus:ring-2 focus:ring-customBlue"
+                    disabled={isLoading}
+                  />
+                  <button className="absolute right-3 top-1/2 transform -translate-y-1/2">
+                    <img src={PencilIcon} alt="Edit" className="w-4 h-4 text-customBlue" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <label htmlFor="last-name" className="text-customBlue font-medium">
+                  Last Name
+                </label>
+                <div className="relative">
+                  <input
+                    id="last-name"
+                    value={lastName}
+                    onChange={(e) => setLastName(e.target.value)}
+                    placeholder={userData?.lastName || "Enter last name"}
+                    className="w-full border border-gray-300 rounded px-4 py-2 pr-10 focus:outline-none focus:ring-2 focus:ring-customBlue"
+                    disabled={isLoading}
+                  />
+                  <button className="absolute right-3 top-1/2 transform -translate-y-1/2">
+                    <img src={PencilIcon} alt="Edit" className="w-4 h-4 text-customBlue" />
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <label htmlFor="email" className="text-customBlue font-medium">
+                Email
+              </label>
+              <div className="relative">
+                <input
+                  id="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  type="email"
+                  placeholder={userData?.email || "Enter email"}
+                  className="w-full border border-gray-300 rounded px-4 py-2 pr-10 focus:outline-none focus:ring-2 focus:ring-customBlue"
+                  disabled={isLoading}
+                />
+                <button className="absolute right-3 top-1/2 transform -translate-y-1/2">
+                  <img src={PencilIcon} alt="Edit" className="w-4 h-4 text-customBlue" />
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <label htmlFor="password" className="text-customBlue font-medium">
+                Password
+              </label>
               <input
-                id="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                type="email"
-                placeholder={userData?.email || "Enter email"}
+                type="password"
+                id="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Enter new password"
                 className="w-full border border-gray-300 rounded px-4 py-2 pr-10 focus:outline-none focus:ring-2 focus:ring-customBlue"
                 disabled={isLoading}
               />
-              <button className="absolute right-3 top-1/2 transform -translate-y-1/2">
-                <img src={PencilIcon} alt="Edit" className="w-4 h-4 text-customBlue" />
+            </div>
+
+            <div className="flex justify-end mt-8">
+              <button
+                className="bg-customBlue hover:bg-customBlue-light text-white py-2 px-4 rounded disabled:opacity-50"
+                onClick={handleProfileUpdate}
+                disabled={isLoading}
+              >
+                {isLoading ? "Saving..." : "Save"}
               </button>
             </div>
-          </div>
-
-          <div className="space-y-2">
-            <label htmlFor="password" className="text-customBlue font-medium">
-              Password
-            </label>
-            <input
-              type="password"
-              id="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="Enter new password"
-              className="w-full border border-gray-300 rounded px-4 py-2 pr-10 focus:outline-none focus:ring-2 focus:ring-customBlue"
-              disabled={isLoading}
-            />
-          </div>
-
-          <div className="flex justify-end mt-8">
-            <button
-              className="bg-customBlue hover:bg-customBlue-light text-white py-2 px-4 rounded disabled:opacity-50"
-              onClick={handleProfileUpdate}
-              disabled={isLoading}
-            >
-              {isLoading ? "Saving..." : "Save"}
-            </button>
           </div>
         </div>
       </div>

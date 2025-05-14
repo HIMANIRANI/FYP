@@ -196,28 +196,6 @@ async def get_today_stocks():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-from fastapi.responses import JSONResponse
-
-
-def nabil_fundamental_analysis():
-    return (
-        "To analyze Nabil Bank fundamentally, we examine key indicators like its Earnings Per Share (EPS) of NPR 45.32, "
-        "a Price-to-Book (P/B) ratio of 2.18, and a Market Capitalization of NPR 120.5 billion. "
-        "These figures reflect the bank's strong profitability, valuation, and market presence in Nepal's financial sector."
-    )
-
-@app.get("/fundamental-analysis/nabil")
-async def get_nabil_fundamental_analysis():
-    return nabil_fundamental_analysis()
-
-
-
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
-
-
-
-
-
-

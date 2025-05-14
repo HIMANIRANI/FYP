@@ -66,14 +66,15 @@ const SignupPage = () => {
           agreeToTerms: false,
         });
       } else {
-        if (result.detail && result.detail.includes("already exists")) {
+        if (result.detail && typeof result.detail === 'string' && result.detail.includes("already exists")) {
           alert("User already exists. Please try logging in.");
         } else {
-          alert(
-            result.detail
-              ? result.detail.map((err) => err.msg).join(", ")
-              : "Something went wrong!"
-          );
+          const errorMessage = result.detail 
+            ? (Array.isArray(result.detail) 
+                ? result.detail.map(err => err.msg).join(", ")
+                : result.detail)
+            : "Something went wrong!";
+          alert(errorMessage);
         }
       }
     } catch (error) {
