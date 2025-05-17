@@ -6,8 +6,6 @@ __pycache__/
 *.egg-info/
 dist/
 build/
-venv/
-.env
 *.log
 
 .idea/
@@ -64,6 +62,3 @@ Desktop.ini
 *.orig
 *.rej
 
-# === ENV Configs ===
-.env.*
-!.env.example

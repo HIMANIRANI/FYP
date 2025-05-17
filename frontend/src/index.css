@@ -18,6 +18,11 @@
 .left.kh-scrolling-image2 {
     animation: leftmarquee2 350s linear infinite;
 }
+
+.left.kh-scrolling-image1,
+.left.kh-scrolling-image2{
+  animation-play-state: paused;
+}
 .kh-flavor-tag-part {
     display: flex
 ;

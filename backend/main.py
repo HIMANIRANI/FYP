@@ -7,16 +7,18 @@ from pathlib import Path
 
 import uvicorn
 from fastapi import (Depends, FastAPI, HTTPException, Request, Response,
-                     WebSocket, WebSocketDisconnect, status)
+                     WebSocket, WebSocketDisconnect, status, Body)
 from fastapi.concurrency import run_in_threadpool  # Added for threadpool
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 
 # Adjust path to import PredictionPipeline
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # from backend.models.model import PredictionPipeline
 from backend.routes.auth_routes import router as auth_router
 from backend.routes.payments import PaymentRequest, initiate_payment
+from backend.models.model_companydb_commented import PredictionPipeline
+from backend.routes.watchlist import router as watchlist_router
 
 # Logging setup
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -30,30 +32,39 @@ app = FastAPI(
 )
 
 # CORS setup
+origins = [
+    "http://localhost:5173",  # Vite dev server
+    "http://localhost:3000",  # Alternative dev port
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:3000",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],  
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"]
 )
 
 
 # Register auth routes
 app.include_router(auth_router)
+app.include_router(watchlist_router)
 
-# # Model initialization
-# pipeline = PredictionPipeline()
-# try:
-#     logger.info("Loading PredictionPipeline components...")
-#     pipeline.load_model_and_tokenizers()
-#     pipeline.load_sentence_transformer()
-#     pipeline.load_reranking_model()
-#     pipeline.load_embeddings()
-#     logger.info("PredictionPipeline loaded successfully.")
-# except Exception as e:
-#     logger.error(f"Failed to load PredictionPipeline: {str(e)}", exc_info=True)
-#     raise
+# Model initialization
+pipeline = PredictionPipeline()
+try:
+    logger.info("Loading PredictionPipeline components...")
+    pipeline.load_model_and_tokenizers()
+    pipeline.load_sentence_transformer()
+    pipeline.load_reranking_model()
+    pipeline.load_embeddings()
+    logger.info("PredictionPipeline loaded successfully.")
+except Exception as e:
+    logger.error(f"Failed to load PredictionPipeline: {str(e)}", exc_info=True)
+    raise
 
 @app.get("/", tags=["Root"])
 async def root():
@@ -61,81 +72,10 @@ async def root():
         "message": "Welcome to the NEPSE-Navigator System!",
         "documentation_url": "/docs",
         "authentication_routes": "/auth",
-        "payment_routes": "/api/initiate-payment",
-        "websocket_endpoint": "/ws"
+        "payment_routes": "/api/initiate-payment"
     }
 
-# @app.websocket("/ws")
-# async def websocket_endpoint(websocket: WebSocket):
-#     await websocket.accept()
-#     logger.info("✅ WebSocket connection established")
-#     try:
-#         while True:
-#             data = await websocket.receive_text()
-#             try:
-#                 query = json.loads(data).get("question", "")
-#                 if not query:
-#                     await websocket.send_text(json.dumps({"response": "❗ Please provide a question."}))
-#                     continue
-#                 logger.info(f"📥 Received query: {query}")
-#                 try:
-#                     response = pipeline.make_predictions(query)
-#                     logger.info("Sending response")
-#                     await websocket.send_text(json.dumps({"response": response}))
-#                     logger.info("📤 Sent response.")
-#                 except Exception as e:
-#                     logger.error(f"Prediction error: {e}", exc_info=True)
-#                     await websocket.send_text(json.dumps({"response": f"An error occurred: {e}"}))
-#             except json.JSONDecodeError as e:
-#                 logger.warning("Invalid JSON received")
-#                 await websocket.send_text(json.dumps({"response": f"Invalid JSON: {e}"}))
-#     except WebSocketDisconnect as e:
-#         logger.info(f"WebSocket disconnected: code={e.code}, reason={e.reason or 'none'}")
-#     except Exception as e:
-#         logger.error(f"Unexpected WebSocket error: {e}", exc_info=True)
-#     finally:
-#         logger.info("WebSocket connection closed")
         
-
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    await websocket.accept()
-    logger.info("✅ WebSocket connection established")
-    try:
-        while True:
-            data = await websocket.receive_text()
-            try:
-                query = json.loads(data).get("question", "")
-                if not query:
-                    await websocket.send_text(json.dumps({"response": "❗ Please provide a question."}))
-                    continue
-
-                logger.info(f"📥 Received query: {query}")
-
-                # 🔍 Simple keyword match for fundamental analysis
-                if "fundamental analysis of nabil bank" in query.lower():
-                    response = nabil_fundamental_analysis()
-                    await websocket.send_text(json.dumps({"response": response}))
-                    continue
-
-                try:
-                    response = pipeline.make_predictions(query)
-                    logger.info("Sending response")
-                    await websocket.send_text(json.dumps({"response": response}))
-                    logger.info("📤 Sent response.")
-                except Exception as e:
-                    logger.error(f"Prediction error: {e}", exc_info=True)
-                    await websocket.send_text(json.dumps({"response": f"An error occurred: {e}"}))
-            except json.JSONDecodeError as e:
-                logger.warning("Invalid JSON received")
-                await websocket.send_text(json.dumps({"response": f"Invalid JSON: {e}"}))
-    except WebSocketDisconnect as e:
-        logger.info(f"WebSocket disconnected: code={e.code}, reason={e.reason or 'none'}")
-    except Exception as e:
-        logger.error(f"Unexpected WebSocket error: {e}", exc_info=True)
-    finally:
-        logger.info("WebSocket connection closed")
-
 @app.post("/api/initiate-payment")
 async def payment_endpoint(request: PaymentRequest):
     try:
@@ -196,6 +136,34 @@ async def get_today_stocks():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/predict")
+async def predict_endpoint(payload: dict = Body(...)):
+    from fastapi.responses import StreamingResponse
+    
+    question = payload.get("question")
+    if not question:
+        raise HTTPException(status_code=400, detail="Missing 'question' in request body")
+
+    async def generate():
+        try:
+            for output in pipeline.make_predictions(question):
+                # Ensure proper formatting of the output
+                if isinstance(output, str):
+                    if not output.startswith('data: '):
+                        output = f"data: {output}"
+                    if not output.endswith('\n\n'):
+                        output = f"{output}\n\n"
+                yield output
+        except Exception as e:
+            logger.error(f"Prediction error: {str(e)}", exc_info=True)
+            yield f"data: Error: {str(e)}\n\n"
+            yield "data: END\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream"
+    )
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+

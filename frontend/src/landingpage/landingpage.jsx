@@ -4,6 +4,7 @@ import { Link, useNavigate } from "react-router-dom";
 import logo from "../assets/money.svg";
 import UserProfileMenu from "../components/UserProfileMenu";
 import ChatContainer from "../components/ChatContainer"; 
+import Watchlist from "../components/Watchlist";
 
 // Configure axios defaults
 axios.defaults.baseURL = "http://localhost:8000";
@@ -25,7 +26,7 @@ const renderContent = () => {
     case "portfolio":
       return <div className="text-2xl p-6">Portfolio Management Page 📊</div>;
     case "watchlist":
-      return <div className="text-2xl p-6">Your Stock Watchlist 📈</div>;
+      return <Watchlist />;
     case "chat":
       return <div className="text-2xl p-6">Chat Section Coming Soon 💬</div>; // optional
     default:
@@ -42,24 +43,24 @@ const renderContent = () => {
         <div className="w-64 bg-white border-r p-4">
           <button
             onClick={() => setCurrentPage("home")}
-            className={`flex items-center space-x-3 px-4 py-3 rounded-lg text-gray-700 hover:bg-gray-100 ${currentPage === "home" && "bg-gray-100"}`}
+            className={`flex items-center space-x-3 w-100 px-4 py-3 rounded-lg text-gray-700 hover:bg-gray-100 ${currentPage === "home" && "bg-gray-100"}`}
           >
             <span className="text-xl">🏠</span>
-            <span>Home</span>
+            <span className="w-full truncate">Home</span>
           </button>
           <button
             onClick={() => setCurrentPage("portfolio")}
-            className={`flex items-center space-x-3 px-4 py-3 rounded-lg text-gray-700 hover:bg-gray-100 ${currentPage === "portfolio" && "bg-gray-100"}`}
+            className={`flex items-center space-x-3 w-100  px-4 py-3 rounded-lg text-gray-700 hover:bg-gray-100 ${currentPage === "portfolio" && "bg-gray-100"}`}
           >
             <span className="text-xl">📊</span>
-            <span>Portfolio Management</span>
+            <span className="w-full truncate">Portfolio Management</span>
           </button>
           <button
             onClick={() => setCurrentPage("watchlist")}
-            className={`flex items-center space-x-3 px-4 py-3 rounded-lg text-gray-700 hover:bg-gray-100 ${currentPage === "watchlist" && "bg-gray-100"}`}
+            className={`flex items-center space-x-3 w-100  px-4 py-3 rounded-lg text-gray-700 hover:bg-gray-100 ${currentPage === "watchlist" && "bg-gray-100"}`}
           >
             <span className="text-xl">📈</span>
-            <span>Stock Watchlist</span>
+            <span className="w-full truncate">Stock Watchlist</span>
           </button>
           <div 
             className="mt-4 p-4 bg-yellow-50 rounded-lg cursor-pointer hover:bg-yellow-100 transition-colors"
@@ -67,7 +68,7 @@ const renderContent = () => {
           >
             <div className="flex items-center text-yellow-600">
               <span className="text-xl mr-2">⭐</span>
-              <span>Upgrade to Premium</span>
+              <span className="w-full truncate">Upgrade to Premium</span>
             </div>
           </div>
         </div>

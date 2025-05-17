@@ -1,6 +1,7 @@
 import { GoogleOAuthProvider } from "@react-oauth/google";
 import React from "react";
 import { Route, Routes } from "react-router-dom";
+import { Toaster } from "react-hot-toast";
 
 import Layout from "./components/Layout";
 import GetStarted from "./getStarted/getstarted";
@@ -14,7 +15,7 @@ import Premium from "./premium/premium";
 import Profile from "./profile/profile";
 import SignupPage from "./signupPage/signupPage";
 import TermsAndConditions from "./terms/terms";
-import Watchlist from "./watchlist/watchlist";
+import Watchlist from "./components/Watchlist";
 
 // Pages that don't need the layout (full-screen pages)
 const fullScreenPages = ['/login', '/signup', '/get-started'];
@@ -24,6 +25,7 @@ function App() {
 
   return (
     <GoogleOAuthProvider clientId="886481282340-ua5r107135v0lc58kngkgsb0tvvb2kii.apps.googleusercontent.com">
+      <Toaster position="top-right" />
       <Routes>
         {/* Full-screen pages (without layout) */}
         <Route path="/login" element={<Login />} />

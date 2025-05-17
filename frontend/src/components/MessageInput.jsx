@@ -1,51 +1,80 @@
-import { useState } from "react";
-import { MessageSquare } from "lucide-react";
+import { useState, useRef, useEffect } from "react";
+import { MessageSquare, Loader } from "lucide-react";
 import toast from "react-hot-toast";
 
-const MessageInput = ({ onSend }) => {
+const MessageInput = ({ onSend, disabled }) => {
   const [message, setMessage] = useState("");
+  const inputRef = useRef(null);
+
+  // Auto-focus input on mount
+  useEffect(() => {
+    if (inputRef.current) {
+      inputRef.current.focus();
+    }
+  }, []);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!message.trim()) return;
+    const trimmedMessage = message.trim();
+    if (!trimmedMessage) return;
 
     try {
-      let messageData = { text: message.trim() };
-
       // Clear input immediately for better UX
       setMessage("");
-
+      
       if (onSend) {
-        onSend(messageData);
+        await onSend(trimmedMessage);
       }
     } catch (error) {
       console.error('Error sending message:', error);
       toast.error("Failed to send message");
+      // Restore the message if sending failed
+      setMessage(trimmedMessage);
+    }
+  };
+
+  const handleKeyDown = (e) => {
+    // Submit on Enter (but not with Shift+Enter)
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSubmit(e);
     }
   };
 
   return (
-    <form onSubmit={handleSubmit} className="flex items-end gap-2">
-      <div className="flex-1">
+    <form onSubmit={handleSubmit} className="flex items-end gap-2 p-4 bg-white border-t">
+      <div className="flex-1 relative">
         <input
+          ref={inputRef}
           id="messageInput"
           type="text"
           value={message}
           onChange={(e) => setMessage(e.target.value)}
+          onKeyDown={handleKeyDown}
           placeholder="Type a message..."
-          className="input input-bordered w-full"
+          disabled={disabled}
+          className={`
+            input input-bordered w-full pr-12
+            ${disabled ? 'bg-gray-100 cursor-not-allowed' : 'bg-white'}
+          `}
         />
       </div>
 
-      <div className="flex items-center gap-2">
-        <button
-          type="submit"
-          className="btn btn-circle btn-primary"
-          disabled={!message.trim()}
-        >
+      <button
+        type="submit"
+        disabled={!message.trim() || disabled}
+        className={`
+          btn btn-circle btn-primary
+          ${disabled ? 'opacity-50 cursor-not-allowed' : 'hover:bg-primary-dark'}
+        `}
+        title={disabled ? 'Please wait...' : 'Send message'}
+      >
+        {disabled ? (
+          <Loader className="w-5 h-5 animate-spin" />
+        ) : (
           <MessageSquare className="w-5 h-5" />
-        </button>
-      </div>
+        )}
+      </button>
     </form>
   );
 };

@@ -64,73 +64,64 @@ class PredictionPipeline:
         
     def load_embeddings(self):
         '''
-        Load all four vector databases with safe deserialization
+        Load all vector databases with safe deserialization. If databases don't exist, initialize them.
         '''
-        # Broker-related information
-        self.broker_vector_db = FAISS.load_local(
-            "../data/vectordata/broker_vector_db", 
-            self.sentence_transformer,
-            allow_dangerous_deserialization=True
-        )
-        
-        # Fundamental data of stocks
-        self.fundamental_vector_db = FAISS.load_local(
-            "../data/vectordata/fundamental_vector_db", 
-            self.sentence_transformer,
-            allow_dangerous_deserialization=True
-        )
-        
-        # Company/stock details from 2008-2025
-#         self.company_vector_db = FAISS.load_local(
-#             "../data/vectordata/company_vector_db", 
-#             self.sentence_transformer,
-#             allow_dangerous_deserialization=True
-#         )
-        
-        # General NEPSE information, rules, IPOs, etc.
-        self.pdf_vector_db = FAISS.load_local(
-            "../data/vectordata/pdf_vector_db", 
-            self.sentence_transformer,
-            allow_dangerous_deserialization=True
-        )
-
-        # ✅ FIX: Create a dictionary for easier debugging
-        self.faiss_stores = {
-            "broker_vector_db": self.broker_vector_db,
-            "fundamental_vector_db": self.fundamental_vector_db,
-#             "company_vector_db": self.company_vector_db,
-            "pdf_vector_db": self.pdf_vector_db
-        }
-        print("\nTesting manual FAISS search...")
-
         try:
-            query_embedding = pipeline.sentence_transformer.embed_query("test query")
-            print("Query Embedding Shape:", len(query_embedding))
-            
-            docs_and_scores = pipeline.broker_vector_db.similarity_search_by_vector(query_embedding, k=5)
-            print("Retrieved docs:", docs_and_scores)
-
-        except Exception as e:
-            print("Manual FAISS search error:", str(e))
-
-        
-        # Debugging info for each store
-        for store_name, vector_store in self.faiss_stores.items():
+            # Broker-related information
             try:
-                print(f"Vector store '{store_name}' stats:")
-                print(f"- Index size: {vector_store.index.ntotal}")
-                try:
-                    # Test manual embedding
-                    query_embedding = self.sentence_transformer.embed_query("test")
-                    print(f"- Test Embedding Shape: {len(query_embedding)}")
-                except Exception as e:
-                    print(f"- Embedding error: {e}")
-
+                self.broker_vector_db = FAISS.load_local(
+                    "data/vectordata/broker_vector_db", 
+                    self.sentence_transformer,
+                    allow_dangerous_deserialization=True
+                )
+                print("Loaded broker vector database")
             except Exception as e:
-                print(f"- Error in store '{store_name}': {str(e)}")
-        
-        print("5. All FAISS vector stores loaded successfully!!!")
+                print(f"Could not load broker vector database: {e}")
+                self.broker_vector_db = None
+            
+            # Fundamental data of stocks
+            try:
+                self.fundamental_vector_db = FAISS.load_local(
+                    "data/vectordata/fundamental_vector_db", 
+                    self.sentence_transformer,
+                    allow_dangerous_deserialization=True
+                )
+                print("Loaded fundamental vector database")
+            except Exception as e:
+                print(f"Could not load fundamental vector database: {e}")
+                self.fundamental_vector_db = None
+            
+            # General NEPSE information, rules, IPOs, etc.
+            try:
+                self.pdf_vector_db = FAISS.load_local(
+                    "data/vectordata/pdf_vector_db", 
+                    self.sentence_transformer,
+                    allow_dangerous_deserialization=True
+                )
+                print("Loaded PDF vector database")
+            except Exception as e:
+                print(f"Could not load PDF vector database: {e}")
+                self.pdf_vector_db = None
 
+            # Create a dictionary for easier debugging
+            self.faiss_stores = {
+                "broker_vector_db": self.broker_vector_db,
+                "fundamental_vector_db": self.fundamental_vector_db,
+                "pdf_vector_db": self.pdf_vector_db
+            }
+            
+            # Check which databases were loaded successfully
+            loaded_dbs = [name for name, db in self.faiss_stores.items() if db is not None]
+            if loaded_dbs:
+                print(f"\nSuccessfully loaded vector stores: {', '.join(loaded_dbs)}")
+            else:
+                print("\nNo vector stores were loaded successfully. You need to initialize them with data first.")
+                
+            print("\nVector store initialization complete.")
+            
+        except Exception as e:
+            print(f"Error in load_embeddings: {str(e)}")
+            raise
 
     def determine_relevant_db(self, question: str):
         """
