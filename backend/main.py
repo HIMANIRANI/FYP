@@ -11,6 +11,7 @@ from fastapi import (Depends, FastAPI, HTTPException, Request, Response,
 from fastapi.concurrency import run_in_threadpool  # Added for threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, StreamingResponse
+from dotenv import load_dotenv
 
 # Adjust path to import PredictionPipeline
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -48,7 +49,6 @@ app.add_middleware(
     expose_headers=["*"]
 )
 
-
 # Register auth routes
 app.include_router(auth_router)
 app.include_router(watchlist_router)
@@ -65,6 +65,9 @@ try:
 except Exception as e:
     logger.error(f"Failed to load PredictionPipeline: {str(e)}", exc_info=True)
     raise
+
+# Load environment variables
+load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 
 @app.get("/", tags=["Root"])
 async def root():

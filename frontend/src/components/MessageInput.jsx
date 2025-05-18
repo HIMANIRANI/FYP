@@ -54,7 +54,7 @@ const MessageInput = ({ onSend, disabled }) => {
           placeholder="Type a message..."
           disabled={disabled}
           className={`
-            input input-bordered w-full pr-12
+            py-2.5 w-full pr-12 outline-none border rounded-lg px-5
             ${disabled ? 'bg-gray-100 cursor-not-allowed' : 'bg-white'}
           `}
         />
@@ -70,9 +70,9 @@ const MessageInput = ({ onSend, disabled }) => {
         title={disabled ? 'Please wait...' : 'Send message'}
       >
         {disabled ? (
-          <Loader className="w-5 h-5 animate-spin" />
+          <Loader className="w-5 h-10 animate-spin" />
         ) : (
-          <MessageSquare className="w-5 h-5" />
+          <MessageSquare className="w-7 h-10" />
         )}
       </button>
     </form>

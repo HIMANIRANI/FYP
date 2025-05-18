@@ -7,6 +7,7 @@ import toast from "react-hot-toast";
 
 const ChatContainer = () => {
   const messageEndRef = useRef(null);
+  
   const [messages, setMessages] = useState([
     { role: "system", content: "How can I help you?" }
   ]);
@@ -79,7 +80,7 @@ const ChatContainer = () => {
   };
 
   return (
-    <div className="flex flex-col h-full max-h-screen bg-gray-50">
+    <div className="flex flex-col overflow-y-auto h-full max-h-screen bg-gray-50">
       {/* Main Content */}
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Chat Messages */}
@@ -91,21 +92,22 @@ const ChatContainer = () => {
                 msg.role === "user"
                   ? "flex"
                   : msg.role === "assistant"
-                  ? "b"
+                  ? "w-2/3"
                   : "c"
               }`}
             >
               <div
                 // style={{ display: "block" }}
-                className={`rounded-lg px-4 py-2 inline-block ${
+                className={` break-all rounded-lg px-4 py-2 inline-block ${
                   msg.role === "user"
                     ? "bg-blue-100 ml-auto"
                     : msg.role === "assistant"
-                    ? "bg-white border border-gray-200"
+                    ? "bg-white border border-gray-200 "
                     : "bg-gray-100 mx-auto text-gray-700"
                 }`}
               >
                 {msg.content}
+                {console.log(msg)}
               </div>
             </div>
           ))}

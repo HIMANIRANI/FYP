@@ -5,15 +5,9 @@
   padding: 8px 0;
 }
 
-.ticker {
-  display: flex;
-  white-space: nowrap;
-  animation: ticker 60s linear infinite;
-}
 
-.ticker:hover {
-  animation-play-state: paused;
-}
+
+
 
 .ticker-item {
   display: inline-flex;

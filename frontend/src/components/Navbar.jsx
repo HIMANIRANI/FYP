@@ -16,11 +16,13 @@ const tickerAnimation = `
   }
 
   .animate-ticker {
-    animation: ticker 300s linear infinite;
+    animation: ticker 600s linear infinite;
     display: flex;
     width: fit-content;
   }
 
+
+  
   .ticker-container {
     overflow: hidden;
     white-space: nowrap;
@@ -172,7 +174,7 @@ const Navbar = ({ className = '' }) => {
       </div>
 
       {/* Stock Ticker */}
-      <div className="ticker-container">
+      <div className="ticker-container ">
         <div className="animate-ticker">
           {/* Double the items to create seamless loop */}
           {[...stockData, ...stockData].map((stock, index) => (

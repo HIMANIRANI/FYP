@@ -2,8 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import Modal from './Modal';
-import { ENDPOINTS, createApiClient } from '<div styleName={} />
-<configreact></configreact>/api';
+import { ENDPOINTS, createApiClient } from '../configreact/api';
 import toast from 'react-hot-toast';
 
 const UserProfileMenu = () => {
