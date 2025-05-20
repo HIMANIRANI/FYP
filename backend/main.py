@@ -12,6 +12,9 @@ from fastapi.concurrency import run_in_threadpool  # Added for threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, StreamingResponse
 from dotenv import load_dotenv
+from pydantic import BaseModel
+from typing import Optional
+from motor.motor_asyncio import AsyncIOMotorClient
 
 # Adjust path to import PredictionPipeline
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -20,6 +23,11 @@ from backend.routes.auth_routes import router as auth_router
 from backend.routes.payments import PaymentRequest, initiate_payment
 from backend.models.model_companydb_commented import PredictionPipeline
 from backend.routes.watchlist import router as watchlist_router
+from backend.routes.profile_routes import router as profile_router
+from backend.models.user_model import UserMessageLimit
+from backend.services.jwt_handler import decodeJWT
+from backend.routes.chat_routes import store_message, router as chat_router
+from backend.configurations.config import settings
 
 # Logging setup
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -52,6 +60,8 @@ app.add_middleware(
 # Register auth routes
 app.include_router(auth_router)
 app.include_router(watchlist_router)
+app.include_router(chat_router)
+app.include_router(profile_router)
 
 # Model initialization
 pipeline = PredictionPipeline()
@@ -68,6 +78,17 @@ except Exception as e:
 
 # Load environment variables
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
+
+class QueryRequest(BaseModel):
+    question: str
+
+# In-memory storage for user message limits (replace with database in production)
+user_message_limits = {}
+
+async def get_current_user(token: str = Depends(decodeJWT)) -> Optional[str]:
+    if not token:
+        return None
+    return token.get("user_id")
 
 @app.get("/", tags=["Root"])
 async def root():
@@ -139,24 +160,77 @@ async def get_today_stocks():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+client = AsyncIOMotorClient(settings.MONGODB_URI)
+db = client.userdata
+users_collection = db["users"]
+
 @app.post("/api/predict")
-async def predict_endpoint(payload: dict = Body(...)):
-    from fastapi.responses import StreamingResponse
-    
+async def predict(
+    payload: dict,
+    current_user: Optional[str] = Depends(get_current_user)
+):
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    # Fetch user from DB to get is_premium status
+    user_doc = await users_collection.find_one({"email": current_user})
+    is_premium = user_doc.get("is_premium", False) if user_doc else False
+    user_limit = user_message_limits.get(
+        current_user,
+        UserMessageLimit(user_id=current_user, is_premium=is_premium)
+    )
+    user_limit.is_premium = is_premium  # Always update in case it changed
+
+    # Check if user can send message
+    if not user_limit.can_send_message():
+        raise HTTPException(
+            status_code=403,
+            detail="Message limit reached. Please upgrade to premium for unlimited messages."
+        )
+
     question = payload.get("question")
     if not question:
         raise HTTPException(status_code=400, detail="Missing 'question' in request body")
 
+    # Increment message count for non-premium users
+    user_limit.increment_message_count()
+    user_message_limits[current_user] = user_limit
+
+    # Store user message
+    await store_message(
+        user_id=current_user,
+        sender=current_user,
+        receiver="assistant",
+        role="user",
+        content=question,
+        message_limit=user_limit.message_count
+    )
+
     async def generate():
         try:
+            assistant_message = ""
             for output in pipeline.make_predictions(question):
-                # Ensure proper formatting of the output
                 if isinstance(output, str):
                     if not output.startswith('data: '):
                         output = f"data: {output}"
                     if not output.endswith('\n\n'):
                         output = f"{output}\n\n"
+                    # Accumulate assistant message for storage
+                    if output.startswith('data: '):
+                        content = output[6:].strip()
+                        if content != "END":
+                            assistant_message += content
                 yield output
+            # Store assistant message after response is complete
+            if assistant_message:
+                await store_message(
+                    user_id=current_user,
+                    sender="assistant",
+                    receiver=current_user,
+                    role="assistant",
+                    content=assistant_message,
+                    message_limit=user_limit.message_count
+                )
         except Exception as e:
             logger.error(f"Prediction error: {str(e)}", exc_info=True)
             yield f"data: Error: {str(e)}\n\n"

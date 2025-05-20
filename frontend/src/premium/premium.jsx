@@ -24,10 +24,8 @@ const Premium = () => {
           <h2 className="text-3xl font-aboreto mb-2 text-customBlue">FREE</h2>
           <p className="text-xl font-aboreto mb-4 text-customBlue">0RS/month</p>
           <ul className="text-customBlue font-abel space-y-2">
-            <li>• NEPSE rules and regulations</li>
-            <li>• Stock Details</li>
-            <li>• Finance Knowledge</li>
-            <li>• NEPSE-related Bodies Details</li>
+            <li>• Upto two prompts</li>
+            <li>• Explore how this chatbot can help you with NEPSE-Navigator</li>
           </ul>
           <button
             className="mt-4 bg-gray-300 text-gray-500 cursor-not-allowed py-2 px-6 rounded-lg font-semibold"
@@ -48,13 +46,11 @@ const Premium = () => {
 
           <h2 className="text-3xl font-aboreto mb-2 text-customBlue">PREMIUM</h2>
           <p className="text-xl font-aboreto mb-4 text-customBlue">500RS/month</p>
+          <p className="text-customBlue font-abel space-y-2">Unlock the Future of Trading: 
+Upgrade to Premium on Nepse Navigator Now</p>
           <ul className="text-customBlue font-abel space-y-2">
-            <li>• All Free Features</li>
-            <li>• Stock Price Prediction</li>
-            <li>• Portfolio Management</li>
-            <li>• Stock Watchlist</li>
-            <li>• Technical Analysis</li>
-            <li>• Fundamental Analysis</li>
+            <li>• Unlimited Prompts</li>
+            <li>• Portfolio Watchlist</li>
           </ul>
           <button
             onClick={handleUpgrade}
