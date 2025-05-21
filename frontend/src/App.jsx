@@ -16,6 +16,7 @@ import Profile from "./profile/profile";
 import SignupPage from "./signupPage/signupPage";
 import TermsAndConditions from "./terms/terms";
 import Watchlist from "./components/Watchlist";
+import AdminDashboard from "./admin/AdminDashboard";
 
 // Pages that don't need the layout (full-screen pages)
 const fullScreenPages = ['/login', '/signup', '/get-started'];
@@ -103,6 +104,14 @@ function App() {
           element={
             <Layout>
               <Watchlist />
+            </Layout>
+          }
+        />
+        <Route
+          path="/admin"
+          element={
+            <Layout>
+              <AdminDashboard />
             </Layout>
           }
         />

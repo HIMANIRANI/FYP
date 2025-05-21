@@ -137,7 +137,7 @@ const ChatContainer = () => {
   };
 
   return (
-    <div className="flex flex-col overflow-y-auto h-full max-h-screen bg-gray-50">
+    <div className="flex flex-col overflow-y-auto  max-h-screen bg-gray-50">
       {/* Premium Upgrade Prompt */}
       {showPremiumPrompt && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">

@@ -48,6 +48,7 @@ const StockTicker = ({ symbol, name, price, change }) => {
 const Navbar = ({ className = '' }) => {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [stockData, setStockData] = useState([]);
+  const [isFeedbackActive, setIsFeedbackActive] = useState(false);
   const location = useLocation();
   const isAuthenticated = !!localStorage.getItem('access_token');
 
@@ -110,7 +111,7 @@ const Navbar = ({ className = '' }) => {
               <Link
                 key={link.path}
                 to={link.path}
-                className={`px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                className={`px-3 py-2 rounded-md text-md font-medium transition-colors ${
                   isActive(link.path)
                     ? 'text-customBlue bg-blue-50'
                     : 'text-gray-600 hover:text-customBlue hover:bg-blue-50'
@@ -120,7 +121,27 @@ const Navbar = ({ className = '' }) => {
               </Link>
             ))}
           </div>
-
+          {/* Feedback Button and Form */}
+          <div className="ph-feedback">
+            <div className="ph-feedback__trigger" onClick={() => setIsFeedbackActive((v) => !v)}>
+              x
+            </div>
+            <div className={`ph-feedback__wrapper${isFeedbackActive ? ' active' : ''}`}> 
+              <div className="ph-feedback__form">
+                <form action="">
+                  <div className="">
+                    <label>email</label>
+                    <input type="email" name="" id="" />
+                  </div>
+                  <div>
+                    <label>Feedback Message</label>
+                    <textarea name="" id=""></textarea>
+                  </div>
+                  <input type="submit" value="" />
+                </form>
+              </div>
+            </div>
+          </div>
           {/* Right: User Menu */}
           <div className="flex items-center">
             {isAuthenticated ? (
@@ -173,6 +194,7 @@ const Navbar = ({ className = '' }) => {
         </div>
       </div>
 
+          
       {/* Stock Ticker */}
       <div className="ticker-container ">
         <div className="animate-ticker">
@@ -224,4 +246,4 @@ const Navbar = ({ className = '' }) => {
   );
 };
 
-export default Navbar; 
+export default Navbar;

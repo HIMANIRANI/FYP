@@ -28,6 +28,8 @@ from backend.models.user_model import UserMessageLimit
 from backend.services.jwt_handler import decodeJWT
 from backend.routes.chat_routes import store_message, router as chat_router
 from backend.configurations.config import settings
+from backend.routes.feedback_routes import router as feedback_router
+from backend.routes.admin_routes import router as admin_router
 
 # Logging setup
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -62,6 +64,8 @@ app.include_router(auth_router)
 app.include_router(watchlist_router)
 app.include_router(chat_router)
 app.include_router(profile_router)
+app.include_router(feedback_router)
+app.include_router(admin_router)
 
 # Model initialization
 pipeline = PredictionPipeline()
@@ -219,7 +223,10 @@ async def predict(
                     if output.startswith('data: '):
                         content = output[6:].strip()
                         if content != "END":
-                            assistant_message += content
+                            if assistant_message and not assistant_message.endswith((" ", "\n")) and not content.startswith((".", ",", "!", "?", ";", ":", "'", '"')):
+                                assistant_message += " "
+                        assistant_message += content
+
                 yield output
             # Store assistant message after response is complete
             if assistant_message:

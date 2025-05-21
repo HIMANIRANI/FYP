@@ -84,3 +84,26 @@
     transform: translateX(-200%);
   }
 }
+
+
+.ph-feedback{
+  position: relative;
+}
+.ph-feedback__wrapper{
+  display: none;
+  position: fixed;
+  top: 50%;
+  right: 50%;
+  background-color: #947373;
+  padding: 30px;
+transform: translate(50%, -50%);
+  
+}
+
+.ph-feedback__wrapper.active{
+  display: block;
+}
+.ph-feedback label{
+  display: block;
+  margin-bottom: 10px;
+}
